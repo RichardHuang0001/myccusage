@@ -522,9 +522,21 @@ body.light-theme .navbar {
 /* 核心 KPI 卡片网格 */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 16px;
   margin-bottom: 24px;
+}
+
+@media (max-width: 1200px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .kpi-card {
@@ -582,6 +594,19 @@ body.light-theme .navbar {
   letter-spacing: -0.03em;
   font-family: "JetBrains Mono", Consolas, monospace;
   margin-bottom: 6px;
+}
+
+.kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kpi-inline-cost {
+  font-size: 1.25rem;
+  font-weight: 700;
 }
 
 .cny-color {

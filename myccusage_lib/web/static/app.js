@@ -238,6 +238,16 @@
     badgeActivePeriod: document.getElementById('badgeActivePeriod'),
     badgeRecordsType: document.getElementById('badgeRecordsType'),
 
+    // 7天 / 14天 滚动指标卡片
+    val7DaysTokens: document.getElementById('val7DaysTokens'),
+    val7DaysCost: document.getElementById('val7DaysCost'),
+    val7DaysAvgTokens: document.getElementById('val7DaysAvgTokens'),
+    val7DaysAvgCost: document.getElementById('val7DaysAvgCost'),
+    val14DaysTokens: document.getElementById('val14DaysTokens'),
+    val14DaysCost: document.getElementById('val14DaysCost'),
+    val14DaysAvgTokens: document.getElementById('val14DaysAvgTokens'),
+    val14DaysAvgCost: document.getElementById('val14DaysAvgCost'),
+
     // 视图容器
     chartsSection: document.getElementById('chartsSection'),
     allAgentsSection: document.getElementById('allAgentsSection'),
@@ -1307,6 +1317,93 @@
       el.badgeRecordsType.textContent = '任务统计';
       el.valRecordsCount.textContent = `${data.totalRecordsCount} 个项目`;
     }
+
+    // 计算并渲染近 7 天与近 14 天滚动数据
+    renderRollingKPIs(data, model);
+  }
+
+  // 提取并聚合过去 N 天（包含今天，自然日倒推）的消耗与计价
+  function computeRollingStats(data, days) {
+    // 获取基准日期 (以当地今天 00:00:00 为基准，若无记录则用系统当前时间)
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    
+    // 计算截止起始日期字符串 YYYY-MM-DD
+    const cutoffDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+    const cutoffStr = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, '0')}-${String(cutoffDate.getDate()).padStart(2, '0')}`;
+
+    let inputSum = 0;
+    let cacheSum = 0;
+    let outputSum = 0;
+    let totalSum = 0;
+
+    if (data.mode === 'daily' && Array.isArray(data.dailyTrend)) {
+      // 在 daily 模式下直接读取精确到日的 dailyTrend
+      data.dailyTrend.forEach(d => {
+        if (d.date && d.date >= cutoffStr && d.date <= todayStr) {
+          inputSum += (d.inputTokens || 0);
+          cacheSum += (d.cacheTokens || 0);
+          outputSum += (d.outputTokens || 0);
+          totalSum += (d.totalTokens || 0);
+        }
+      });
+    } else if (Array.isArray(data.weeks)) {
+      // 在 session 分周模式下，遍历各个自然日
+      data.weeks.forEach(w => {
+        if (Array.isArray(w.days)) {
+          w.days.forEach(d => {
+            if (d.date && d.date >= cutoffStr && d.date <= todayStr) {
+              inputSum += (d.inputTokens || 0);
+              cacheSum += (d.cacheTokens || 0);
+              outputSum += (d.outputTokens || 0);
+              totalSum += (d.totalTokens || 0);
+            }
+          });
+        }
+      });
+    } else if (Array.isArray(data.flatRecords)) {
+      // 备选 fallback: 遍历扁平记录按 lastActivity 过滤
+      data.flatRecords.forEach(r => {
+        const act = r.lastActivity || '';
+        const dStr = act.slice(0, 10);
+        if (dStr && dStr >= cutoffStr && dStr <= todayStr) {
+          inputSum += (r.inputTokens || 0);
+          cacheSum += (r.cacheTokens || 0);
+          outputSum += (r.outputTokens || 0);
+          totalSum += (r.totalTokens || 0);
+        }
+      });
+    }
+
+    return {
+      days,
+      inputTokens: inputSum,
+      cacheTokens: cacheSum,
+      outputTokens: outputSum,
+      totalTokens: totalSum
+    };
+  }
+
+  function renderRollingKPIs(data, model) {
+    const stats7 = computeRollingStats(data, 7);
+    const cost7 = calcCost(model, stats7.inputTokens, stats7.cacheTokens, stats7.outputTokens);
+    const avgTokens7 = Math.round(stats7.totalTokens / 7);
+    const avgCost7 = cost7 / 7;
+
+    if (el.val7DaysTokens) el.val7DaysTokens.textContent = formatTokens(stats7.totalTokens);
+    if (el.val7DaysCost) el.val7DaysCost.innerHTML = formatInlineCost(model, cost7);
+    if (el.val7DaysAvgTokens) el.val7DaysAvgTokens.textContent = formatTokens(avgTokens7);
+    if (el.val7DaysAvgCost) el.val7DaysAvgCost.innerHTML = formatInlineCost(model, avgCost7);
+
+    const stats14 = computeRollingStats(data, 14);
+    const cost14 = calcCost(model, stats14.inputTokens, stats14.cacheTokens, stats14.outputTokens);
+    const avgTokens14 = Math.round(stats14.totalTokens / 14);
+    const avgCost14 = cost14 / 14;
+
+    if (el.val14DaysTokens) el.val14DaysTokens.textContent = formatTokens(stats14.totalTokens);
+    if (el.val14DaysCost) el.val14DaysCost.innerHTML = formatInlineCost(model, cost14);
+    if (el.val14DaysAvgTokens) el.val14DaysAvgTokens.textContent = formatTokens(avgTokens14);
+    if (el.val14DaysAvgCost) el.val14DaysAvgCost.innerHTML = formatInlineCost(model, avgCost14);
   }
 
   // 2. 图表渲染 (动态联动选中模型费率，金额轴默认使用人民币 CNY ¥)
@@ -1525,9 +1622,18 @@
     el.barCacheHit.style.width = `${Math.min(100, Math.max(0, parseFloat(hitRate) || 0))}%`;
     el.badgeActivePeriod.textContent = 'Agent 矩阵';
     el.valActiveDays.textContent = `7 款支持`;
-    el.subActiveDays.textContent = `全景总览模式`;
     el.badgeRecordsType.textContent = '总会话数';
     el.valRecordsCount.textContent = `${gs.totalSessions} 笔`;
+
+    // 全景概览下重置滚动卡片为综合/单 Agent 提示
+    if (el.val7DaysTokens) el.val7DaysTokens.textContent = '--';
+    if (el.val7DaysCost) el.val7DaysCost.textContent = '--';
+    if (el.val7DaysAvgTokens) el.val7DaysAvgTokens.textContent = '--';
+    if (el.val7DaysAvgCost) el.val7DaysAvgCost.textContent = '--';
+    if (el.val14DaysTokens) el.val14DaysTokens.textContent = '--';
+    if (el.val14DaysCost) el.val14DaysCost.textContent = '--';
+    if (el.val14DaysAvgTokens) el.val14DaysAvgTokens.textContent = '--';
+    if (el.val14DaysAvgCost) el.val14DaysAvgCost.textContent = '--';
 
     let html = '';
     allData.agents.forEach(a => {
