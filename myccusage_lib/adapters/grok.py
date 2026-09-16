@@ -94,7 +94,7 @@ class GrokAdapter(BaseAgentAdapter):
                     records = cached[2]
                 else:
                     records = []
-                    sid = fpath.split("/")[-2]
+                    sid = os.path.basename(os.path.dirname(fpath))
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             for line in f:

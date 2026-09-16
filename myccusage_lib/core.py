@@ -102,7 +102,8 @@ def get_agy_titles():
 
     logs_glob = os.path.expanduser("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl")
     for log_path in glob.glob(logs_glob):
-        uid = log_path.split("/")[-4]
+        parts = os.path.normpath(log_path).split(os.sep)
+        uid = parts[-4] if len(parts) >= 4 else ""
         if uid not in titles or titles[uid].endswith(":") or len(titles[uid]) < 4:
             try:
                 with open(log_path, "r", encoding="utf-8") as f:
@@ -141,7 +142,7 @@ def get_claude_titles():
             pass
 
     for p in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
-        sid = p.split("/")[-1].replace(".jsonl", "")
+        sid = os.path.basename(p).replace(".jsonl", "")
         if sid not in titles or titles[sid].startswith("/"):
             try:
                 with open(p, "r", encoding="utf-8") as f:
