@@ -45,19 +45,10 @@ Automatically resolves human-readable session titles, with weekly/daily subtotal
 ---
 
 ## Installation
+ 
+### Install via pip directly (Zero Node.js / ccusage dependency)
 
-### Step 1: Install `ccusage` globally
-
-`myccusage` relies on [ccusage](https://github.com/ryoppippi/ccusage) to collect raw agent metrics:
-
-```bash
-npm install -g ccusage
-# or with bun / pnpm:
-# bun add -g ccusage
-# pnpm add -g ccusage
-```
-
-### Step 2: Install `myccusage`
+`myccusage` now comes with high-performance native Python parsers for all supported agents. **No Node.js or external `ccusage` CLI is required**:
 
 ```bash
 pip install myccusage

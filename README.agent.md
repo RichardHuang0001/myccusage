@@ -154,8 +154,19 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 myccusage/
 ├── myccusage.py                 # CLI 入口，处理软链接并委托 cli.py
 ├── myccusage_lib/
-│   ├── __init__.py             # 版本号与元数据定义 (__version__ = "1.2.2")
-│   ├── core.py                 # 标题解析、底层切片采集、两级缓存、聚合计算内核
+│   ├── __init__.py             # 版本号与元数据定义 (__version__ = "1.3.0")
+│   ├── adapters/               # 原生高性能 Agent 适配器体系 (Zero ccusage dependency)
+│   │   ├── base.py             # 适配器抽象基类与时间戳/防抖缓存工具
+│   │   ├── workbuddy.py        # 腾讯 WorkBuddy 原生 SQLite + 流式 JSONL 解析
+│   │   ├── hermes.py           # Hermes state.db 高性能只读直查 (< 1ms)
+│   │   ├── opencode.py         # OpenCode opencode.db 高性能只读直查 (< 1ms)
+│   │   ├── pi.py               # Pi Agent JSONL 流式提取 (< 2ms)
+│   │   ├── claude.py           # Claude Code message.id 幂等去重解析
+│   │   ├── codex.py            # OpenAI Codex token_count delta 增量累计
+│   │   ├── grok.py             # Grok turn_completed 聚合与缓存剥离
+│   │   ├── agy.py              # Google Antigravity 双轨解析与缓存加速
+│   │   └── __init__.py         # 适配器注册表 (ADAPTERS)
+│   ├── core.py                 # 标题解析、两级缓存、聚合计算内核
 │   ├── cli.py                  # CLI 参数解析、Unicode 字符级中英宽度排版渲染
 │   └── web/
 │       ├── server.py           # 原生单文件 HTTP 服务、REST API、30s 心跳自退
@@ -164,6 +175,7 @@ myccusage/
 │           ├── style.css       # 响应式玻璃拟态暗色/亮色样式
 │           └── app.js          # 原生 JavaScript 状态流、动态全站重算、Chart.js
 ├── README.md                   # 面向终端开发者与用户的标准文档
+├── README.en.md                # 英文说明文档
 ├── README.agent.md             # 面向 AI Agent 与系统维护者的工程架构指南 (本文档)
 ├── install.sh                  # 一键链接与全局环境配置脚本
 └── pyproject.toml              # PEP 621 打包配置与 PyPI 发布入口

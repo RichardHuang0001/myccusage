@@ -1,0 +1,167 @@
+"""
+myccusage_lib.adapters.grok:
+Grok Build CLI 原生适配器:
+- 读取 session_search.sqlite、summary.json 与 prompt_history.jsonl 获取标题
+- 流式解析 ~/.grok/sessions/**/updates.jsonl 提取各轮消耗
+"""
+
+import os
+import glob
+import json
+import sqlite3
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
+
+class GrokAdapter(BaseAgentAdapter):
+    agent_id = "grok"
+    display_name = "Grok"
+    has_times = False
+
+    def __init__(self):
+        super().__init__()
+        self.base_dir = os.path.expanduser("~/.grok")
+        self.sessions_dir = os.path.join(self.base_dir, "sessions")
+
+    def is_available(self) -> bool:
+        return os.path.exists(self.base_dir)
+
+    def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        titles = {}
+        times = {}
+        if not self.is_available():
+            return titles, times
+
+        db_path = os.path.join(self.sessions_dir, "session_search.sqlite")
+        if os.path.exists(db_path):
+            try:
+                uri = f"file:{db_path}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                cur = conn.cursor()
+                cur.execute("SELECT session_id, title FROM session_docs")
+                for sid, t in cur.fetchall():
+                    if t and t.strip():
+                        titles[sid] = t.strip()[:60]
+                conn.close()
+            except Exception:
+                pass
+
+        for summary_path in glob.glob(os.path.join(self.sessions_dir, "**/summary.json"), recursive=True):
+            try:
+                with open(summary_path, "r", encoding="utf-8") as f:
+                    sdata = json.load(f)
+                    sid = sdata.get("info", {}).get("id")
+                    summ = sdata.get("session_summary")
+                    if sid and summ and summ.strip() and sid not in titles:
+                        titles[sid] = summ.strip()[:60]
+            except Exception:
+                pass
+
+        for ph in glob.glob(os.path.join(self.sessions_dir, "*/prompt_history.jsonl")):
+            try:
+                with open(ph, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            row = json.loads(line)
+                            sid = row.get("session_id")
+                            p = row.get("prompt")
+                            if sid and p and sid not in titles:
+                                titles[sid] = p.strip()[:60]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        return titles, times
+
+    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        if not self.is_available():
+            return {}, []
+
+        daily_map = {}
+        session_map = {}
+
+        files = glob.glob(os.path.join(self.sessions_dir, "**/updates.jsonl"), recursive=True)
+
+        with self._lock:
+            for fpath in files:
+                try:
+                    stat = os.stat(fpath)
+                except OSError:
+                    continue
+
+                mtime, size = stat.st_mtime, stat.st_size
+                cached = self._file_cache.get(fpath)
+                if cached and cached[0] == mtime and cached[1] == size:
+                    records = cached[2]
+                else:
+                    records = []
+                    sid = fpath.split("/")[-2]
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if "turn_completed" not in line:
+                                    continue
+                                try:
+                                    obj = json.loads(line)
+                                except Exception:
+                                    continue
+                                u = obj.get("params", {}).get("update", {}).get("usage") or {}
+                                raw_inp = u.get("inputTokens", 0)
+                                c_read = u.get("cachedReadTokens", 0)
+                                out = u.get("outputTokens", 0)
+                                inp = max(0, raw_inp - c_read)
+                                tot = inp + c_read + out
+                                if tot == 0:
+                                    continue
+
+                                ts = obj.get("timestamp") or 0
+                                date_str = ts_to_date_str(ts) if ts else "1970-01-01"
+                                iso_str = ts_to_iso(ts) if ts else ""
+
+                                records.append((sid, date_str, iso_str, inp, c_read, out, tot))
+                    except Exception:
+                        pass
+                    self._file_cache[fpath] = (mtime, size, records)
+
+                for sid, date_str, iso_str, inp, cr, out, tot in records:
+                    # 每日切片
+                    if date_str not in daily_map:
+                        daily_map[date_str] = {}
+                    if sid not in daily_map[date_str]:
+                        daily_map[date_str][sid] = {
+                            "sessionId": sid,
+                            "date": date_str,
+                            "inputTokens": 0,
+                            "cacheReadTokens": 0,
+                            "outputTokens": 0,
+                            "totalTokens": 0,
+                            "lastActivity": iso_str
+                        }
+                    ds = daily_map[date_str][sid]
+                    ds["inputTokens"] += inp
+                    ds["cacheReadTokens"] += cr
+                    ds["outputTokens"] += out
+                    ds["totalTokens"] += tot
+                    if iso_str > ds["lastActivity"]:
+                        ds["lastActivity"] = iso_str
+
+                    # 项目生命周期汇总
+                    if sid not in session_map:
+                        session_map[sid] = {
+                            "sessionId": sid,
+                            "inputTokens": 0,
+                            "cacheReadTokens": 0,
+                            "outputTokens": 0,
+                            "totalTokens": 0,
+                            "lastActivity": iso_str
+                        }
+                    ss = session_map[sid]
+                    ss["inputTokens"] += inp
+                    ss["cacheReadTokens"] += cr
+                    ss["outputTokens"] += out
+                    ss["totalTokens"] += tot
+                    if iso_str > ss["lastActivity"]:
+                        ss["lastActivity"] = iso_str
+
+        daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
+        session_res = list(session_map.values())
+        return daily_res, session_res

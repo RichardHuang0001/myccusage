@@ -20,6 +20,7 @@ import shutil
 import concurrent.futures
 from datetime import datetime, timezone
 from collections import OrderedDict
+from .adapters import ADAPTERS, get_adapter
 
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 
@@ -574,16 +575,8 @@ def resolve_title(sid, titles):
 # ==================== 底层切片与缓存引擎 ====================
 
 def check_ccusage_installed():
-    """检查系统是否安装了底层 ccusage CLI 工具"""
-    if not shutil.which("ccusage"):
-        raise RuntimeError(
-            "未检测到底层依赖 'ccusage' 命令行工具！\n\n"
-            "myccusage 依赖开源的 ccusage CLI (Node.js) 获取底层会话切片。\n"
-            "请在终端执行以下命令进行全局安装（二选一）：\n"
-            "  ▶ 使用 npm 安装：  npm install -g ccusage\n"
-            "  ▶ 或使用 bun 安装： bun add -g ccusage\n\n"
-            "安装完成后重新运行当前命令即可。"
-        )
+    """检查系统是否安装了底层 ccusage CLI 工具 (用于未被原生接管的外部工具回退)"""
+    return shutil.which("ccusage") is not None
 
 def run_ccusage(args, capture_output=True, text=True, max_retries=3):
     """
@@ -637,35 +630,39 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     """
     获取结构化的每日会话账本数据 (返回纯 dict/list，无终端控制台输出)
     """
-    if agent_type != "workbuddy":
-        check_ccusage_installed()
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
 
     info = SUPPORTED_AGENTS[agent_type]
     display_name = info["name"]
     ccusage_subcmd = info["subcmd"]
-    titles, times_override = get_agent_metadata(agent_type)
+
+    adapter = ADAPTERS.get(agent_type)
+    if adapter:
+        titles, times_override = adapter.get_titles_and_times()
+    else:
+        titles, times_override = get_agent_metadata(agent_type)
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
         today_str = datetime.now().strftime("%Y-%m-%d")
 
-        if agent_type == "workbuddy":
-            wb_daily_map, _ = scan_workbuddy_data()
-            active_days = sorted(wb_daily_map.keys())
-            daily_tokens_map = {d: sum(s["totalTokens"] for s in s_list) for d, s_list in wb_daily_map.items()}
+        # 优先通过原生高性能适配器获取数据
+        if adapter:
+            native_daily_map, _ = adapter.fetch_data()
+            active_days = sorted(native_daily_map.keys())
+            daily_tokens_map = {d: sum(s["totalTokens"] for s in s_list) for d, s_list in native_daily_map.items()}
         else:
-            # 1. 获取活动日基准 (带 --offline 阻断网络挂起)
+            # 外部回退 (仅当系统安装了 ccusage 时可用)
+            if not check_ccusage_installed():
+                raise RuntimeError(f"未检测到 {agent_type} 本地数据源或 ccusage 工具")
             res_daily = run_ccusage([ccusage_subcmd, "daily", "--json"])
             if res_daily.returncode != 0:
                 raise RuntimeError(f"执行 ccusage {ccusage_subcmd} daily 失败: {res_daily.stderr}")
-
             try:
                 daily_json = json.loads(res_daily.stdout)
             except Exception as e:
                 raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} daily 输出: {e}")
-
             daily_list = daily_json.get("daily", [])
             active_days = [d.get("date") for d in daily_list if d.get("date")]
             active_days.sort()
@@ -687,12 +684,12 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         cache_dirty = False
         day_sessions_map = OrderedDict()
 
-        if agent_type == "workbuddy":
+        if adapter:
             for d in active_days:
                 if not force_refresh and d != today_str and d in cache and not (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0):
                     day_sessions_map[d] = cache[d]
                 else:
-                    s_list = wb_daily_map.get(d, [])
+                    s_list = native_daily_map.get(d, [])
                     for s in s_list:
                         sid = s.get("sessionId")
                         if not s.get("lastActivity") and sid in times_override:
@@ -702,7 +699,6 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
                         cache[d] = s_list
                         cache_dirty = True
         else:
-            # 识别缺失或先前被污染(有Token却被记录为空列表)的历史天数，顺序安全拉取修复
             uncached_history_days = [
                 d for d in active_days
                 if d != today_str and (d not in cache or (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0))
@@ -717,7 +713,6 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
                 if d_str != today_str:
                     day_sessions_map[d_str] = cache.get(d_str, [])
                 else:
-                    # 仅今日调用实时切片抓取
                     s_list = fetch_single_day_sessions(ccusage_subcmd, d_str, times_override)
                     if s_list is not None:
                         day_sessions_map[today_str] = s_list
@@ -886,34 +881,36 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
     """
     获取结构化的项目全生命周期总览数据 (返回纯 dict/list，无终端控制台输出)
     """
-    if agent_type != "workbuddy":
-        check_ccusage_installed()
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
 
     info = SUPPORTED_AGENTS[agent_type]
     display_name = info["name"]
     ccusage_subcmd = info["subcmd"]
-    titles, times_override = get_agent_metadata(agent_type)
+
+    adapter = ADAPTERS.get(agent_type)
+    if adapter:
+        titles, times_override = adapter.get_titles_and_times()
+    else:
+        titles, times_override = get_agent_metadata(agent_type)
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
-        if agent_type == "workbuddy":
-            _, raw_sessions = scan_workbuddy_data()
+        if adapter:
+            _, raw_sessions = adapter.fetch_data()
         else:
+            if not check_ccusage_installed():
+                raise RuntimeError(f"未检测到 {agent_type} 本地数据源或 ccusage 工具")
             sub_args = [ccusage_subcmd, "session", "--json"]
             if clean_args:
                 sub_args.extend(clean_args)
-
             res = run_ccusage(sub_args)
             if res.returncode != 0:
                 raise RuntimeError(f"执行 ccusage {ccusage_subcmd} session 失败: {res.stderr}")
-
             try:
                 usage_data = json.loads(res.stdout)
             except Exception as e:
                 raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} 输出: {e}")
-
             raw_sessions = usage_data.get("sessions", [])
 
     sessions = []

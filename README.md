@@ -46,18 +46,9 @@
 
 ## 安装说明
 
-### 1. 安装底层依赖 `ccusage`
+### 直接使用 pip 安装（无需 Node.js / ccusage）
 
-`myccusage` 依赖开源工具 [ccusage](https://github.com/ryoppippi/ccusage) 收集底层数据，需先全局安装：
-
-```bash
-npm install -g ccusage
-# 或使用 bun / pnpm:
-# bun add -g ccusage
-# pnpm add -g ccusage
-```
-
-### 2. 安装 `myccusage`
+`myccusage` 现已内置各大 Agent 的原生 Python 高性能解析内核，**完全不依赖 Node.js 或外部 ccusage 工具**，直接 pip 即可安装并使用：
 
 ```bash
 pip install myccusage
