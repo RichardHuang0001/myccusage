@@ -184,6 +184,7 @@ myccusage/
       "grok": {"name": "Grok", "subcmd": "grok", "has_times": False},
       "pi": {"name": "Pi Agent", "subcmd": "pi", "has_times": False},
       "opencode": {"name": "OpenCode", "subcmd": "opencode", "has_times": True},
+      "workbuddy": {"name": "WorkBuddy", "subcmd": "workbuddy", "has_times": True},
   }
   ```
 
@@ -195,9 +196,9 @@ myccusage/
   - **作用**：获取各 Session 全生命周期的累计消耗总览。
   - **返回值**：字典包含 `sessions` 列表（含 `sessionId`, `time`, `title`, `totalTokens`, `cost`, `hitRate` 等）及 `summary`。
 - `get_all_agents_summary() -> dict`
-  - **作用**：Web 看板首屏使用的 7 大 Agent 跨助手全景对比数据，包含各 Agent 总 Token、各部分细分与折算总费用。
+  - **作用**：Web 看板首屏使用的 8 大 Agent 跨助手全景对比数据，包含各 Agent 总 Token、各部分细分与折算总费用。
 
-#### 原生标题提取函数（均返回 `dict[str, str]` 映射 `sessionId -> title`）：
+#### 原生标题与时间提取函数（均返回 `dict[str, str]` 映射 `sessionId -> title`）：
 - `get_agy_titles()`: 从 `~/.gemini/antigravity/agyhub_summaries_proto.pb` 反序列化二进制 UTF-8 文本；兜底读取 `transcript.jsonl` 首行。
 - `get_claude_titles()`: 从 `~/.claude/history.jsonl` 及各工程 `~/.claude/projects/*/*.jsonl` 中读取。
 - `get_hermes_titles_and_times()`: 读取 `~/.hermes/state.db` SQLite 数据表。
@@ -205,6 +206,7 @@ myccusage/
 - `get_grok_titles()`: 读取 `~/.grok/sessions/session_search.sqlite` 与 `prompt_history.jsonl`。
 - `get_pi_titles()`: 读取 `~/.pi/agent/sessions/*/*.jsonl`。
 - `get_opencode_titles_and_times()`: 读取 `~/.local/share/opencode/opencode.db`。
+- `get_workbuddy_titles_and_times()`: 读取 `~/.workbuddy/workbuddy.db` SQLite 数据表；兜底读取 `~/.workbuddy/projects/*/*.jsonl`。
 
 ---
 

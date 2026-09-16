@@ -1,7 +1,7 @@
 """
 myccusage_lib.core:
 核心数据与计算内核：
-- 7 大 Agent 原生会话标题与时间元数据解析
+- 8 大 Agent 原生会话标题与时间元数据解析
 - DeepSeek-V4.1-Flash 高峰期等效计价模型
 - ~/.cache/myccusage 智能切片与两级缓存
 - 纯结构化日账本 (Daily) 与项目总览 (Session) 聚合计算
@@ -41,6 +41,7 @@ SUPPORTED_AGENTS = {
     "grok": {"name": "Grok", "subcmd": "grok", "has_times": False},
     "pi": {"name": "Pi Agent", "subcmd": "pi", "has_times": False},
     "opencode": {"name": "OpenCode", "subcmd": "opencode", "has_times": True},
+    "workbuddy": {"name": "WorkBuddy", "subcmd": "workbuddy", "has_times": True},
 }
 
 def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
@@ -351,6 +352,188 @@ def get_opencode_titles_and_times():
             pass
     return titles, times
 
+def get_workbuddy_titles_and_times():
+    """提取 WorkBuddy 会话标题与最后活跃时间"""
+    titles = {}
+    times = {}
+    wb_dir = os.path.expanduser("~/.workbuddy")
+    db_path = os.path.join(wb_dir, "workbuddy.db")
+    if os.path.exists(db_path):
+        try:
+            uri = f"file:{db_path}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+            cur = conn.cursor()
+            for row in cur.execute("SELECT id, title, custom_title, created_at, updated_at, last_activity_at FROM sessions"):
+                sid, t, ct, ca, ua, la = row
+                title = ct or t
+                if title and title.strip():
+                    titles[sid] = title.strip()
+                ts = la or ua or ca
+                if ts:
+                    times[sid] = datetime.fromtimestamp(ts / 1000.0, timezone.utc).isoformat()
+            conn.close()
+        except Exception:
+            pass
+
+    # 兜底补充扫描 projects 目录中未记录在 DB 或 custom-title 的会话
+    project_files = glob.glob(os.path.join(wb_dir, "projects/*/*.jsonl"))
+    for p in project_files:
+        sid = os.path.basename(p).replace(".jsonl", "")
+        if sid not in titles or not titles[sid]:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        if "custom-title" in line or '"role":"user"' in line:
+                            obj = json.loads(line)
+                            if obj.get("type") == "custom-title" and obj.get("customTitle"):
+                                titles[sid] = obj["customTitle"].strip()
+                                break
+                            elif obj.get("type") == "message" and obj.get("role") == "user":
+                                cnt = obj.get("content", [])
+                                if isinstance(cnt, list):
+                                    for item in cnt:
+                                        if isinstance(item, dict) and item.get("text"):
+                                            titles[sid] = item["text"].split("\n")[0][:60].strip()
+                                            break
+                                elif isinstance(cnt, str):
+                                    titles[sid] = cnt.split("\n")[0][:60].strip()
+                                if sid in titles:
+                                    break
+            except Exception:
+                pass
+    return titles, times
+
+_WB_SCAN_LOCK = threading.Lock()
+_WB_FILES_CACHE = {}  # fpath -> (mtime, size, list_of_records)
+
+def scan_workbuddy_data():
+    """
+    高性能流式扫描 WorkBuddy 项目日志，返回 (daily_map, session_list)
+    - daily_map: { "YYYY-MM-DD": [ {sessionId, totalTokens, inputTokens, cacheReadTokens, outputTokens, lastActivity}, ... ] }
+    - session_list: [ {sessionId, totalTokens, inputTokens, cacheReadTokens, outputTokens, lastActivity}, ... ]
+    """
+    wb_dir = os.path.expanduser("~/.workbuddy")
+    if not os.path.exists(wb_dir):
+        return {}, []
+
+    project_globs = [
+        os.path.join(wb_dir, "projects/*/*.jsonl"),
+        os.path.join(wb_dir, "sessions/*/*.jsonl"),
+        os.path.join(wb_dir, "sessions/*.jsonl")
+    ]
+    files = []
+    seen_files = set()
+    for g in project_globs:
+        for fpath in glob.glob(g):
+            if fpath not in seen_files:
+                seen_files.add(fpath)
+                files.append(fpath)
+
+    daily_map = {}
+    session_map = {}
+
+    with _WB_SCAN_LOCK:
+        for fpath in files:
+            try:
+                stat = os.stat(fpath)
+            except OSError:
+                continue
+
+            mtime, size = stat.st_mtime, stat.st_size
+            cached = _WB_FILES_CACHE.get(fpath)
+            if cached and cached[0] == mtime and cached[1] == size:
+                records = cached[2]
+            else:
+                records = []
+                sid = os.path.basename(fpath).replace(".jsonl", "")
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip() or ("usage" not in line and "rawUsage" not in line):
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            pd = obj.get("providerData") or {}
+                            ru = pd.get("rawUsage")
+                            u = pd.get("usage")
+                            if not ru and not u:
+                                continue
+                            ts = obj.get("timestamp")
+                            if not ts:
+                                continue
+
+                            dt = datetime.fromtimestamp(ts / 1000.0)
+                            date_str = dt.strftime("%Y-%m-%d")
+                            iso_str = datetime.fromtimestamp(ts / 1000.0, timezone.utc).isoformat()
+
+                            if ru:
+                                hit = ru.get("prompt_cache_hit_tokens", 0)
+                                miss = ru.get("prompt_cache_miss_tokens", 0)
+                                out = ru.get("completion_tokens", 0)
+                            else:
+                                if "input_tokens" in u:
+                                    miss = u.get("input_tokens", 0)
+                                    hit = 0
+                                    out = u.get("output_tokens", 0)
+                                else:
+                                    inp = u.get("inputTokens", 0)
+                                    hit = sum(d.get("cached_tokens", 0) for d in u.get("inputTokensDetails", []))
+                                    miss = max(0, inp - hit)
+                                    out = u.get("outputTokens", 0)
+                            tot = hit + miss + out
+                            records.append((sid, date_str, iso_str, miss, hit, out, tot))
+                except Exception:
+                    pass
+                _WB_FILES_CACHE[fpath] = (mtime, size, records)
+
+            for sid, date_str, iso_str, miss, hit, out, tot in records:
+                # 每日切片
+                if date_str not in daily_map:
+                    daily_map[date_str] = {}
+                if sid not in daily_map[date_str]:
+                    daily_map[date_str][sid] = {
+                        "sessionId": sid,
+                        "date": date_str,
+                        "inputTokens": 0,
+                        "cacheReadTokens": 0,
+                        "outputTokens": 0,
+                        "totalTokens": 0,
+                        "lastActivity": iso_str
+                    }
+                ds = daily_map[date_str][sid]
+                ds["inputTokens"] += miss
+                ds["cacheReadTokens"] += hit
+                ds["outputTokens"] += out
+                ds["totalTokens"] += tot
+                if iso_str > ds["lastActivity"]:
+                    ds["lastActivity"] = iso_str
+
+                # 全生命周期会话
+                if sid not in session_map:
+                    session_map[sid] = {
+                        "sessionId": sid,
+                        "inputTokens": 0,
+                        "cacheReadTokens": 0,
+                        "outputTokens": 0,
+                        "totalTokens": 0,
+                        "lastActivity": iso_str
+                    }
+                ss = session_map[sid]
+                ss["inputTokens"] += miss
+                ss["cacheReadTokens"] += hit
+                ss["outputTokens"] += out
+                ss["totalTokens"] += tot
+                if iso_str > ss["lastActivity"]:
+                    ss["lastActivity"] = iso_str
+
+    daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
+    session_res = list(session_map.values())
+    return daily_res, session_res
+
 def get_agent_metadata(agent_type):
     """根据 agent 类型获取会话标题映射与时间修正映射"""
     titles = {}
@@ -369,6 +552,8 @@ def get_agent_metadata(agent_type):
         titles = get_pi_titles()
     elif agent_type == "opencode":
         titles, times_override = get_opencode_titles_and_times()
+    elif agent_type == "workbuddy":
+        titles, times_override = get_workbuddy_titles_and_times()
     return titles, times_override
 
 def resolve_title(sid, titles):
@@ -452,7 +637,8 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     """
     获取结构化的每日会话账本数据 (返回纯 dict/list，无终端控制台输出)
     """
-    check_ccusage_installed()
+    if agent_type != "workbuddy":
+        check_ccusage_installed()
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
 
@@ -463,22 +649,27 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
-        # 1. 获取活动日基准 (带 --offline 阻断网络挂起)
-        res_daily = run_ccusage([ccusage_subcmd, "daily", "--json"])
-        if res_daily.returncode != 0:
-            raise RuntimeError(f"执行 ccusage {ccusage_subcmd} daily 失败: {res_daily.stderr}")
-
-        try:
-            daily_json = json.loads(res_daily.stdout)
-        except Exception as e:
-            raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} daily 输出: {e}")
-
-        daily_list = daily_json.get("daily", [])
-        active_days = [d.get("date") for d in daily_list if d.get("date")]
-        active_days.sort()
-        daily_tokens_map = {d.get("date"): d.get("totalTokens", 0) for d in daily_list if d.get("date")}
-
         today_str = datetime.now().strftime("%Y-%m-%d")
+
+        if agent_type == "workbuddy":
+            wb_daily_map, _ = scan_workbuddy_data()
+            active_days = sorted(wb_daily_map.keys())
+            daily_tokens_map = {d: sum(s["totalTokens"] for s in s_list) for d, s_list in wb_daily_map.items()}
+        else:
+            # 1. 获取活动日基准 (带 --offline 阻断网络挂起)
+            res_daily = run_ccusage([ccusage_subcmd, "daily", "--json"])
+            if res_daily.returncode != 0:
+                raise RuntimeError(f"执行 ccusage {ccusage_subcmd} daily 失败: {res_daily.stderr}")
+
+            try:
+                daily_json = json.loads(res_daily.stdout)
+            except Exception as e:
+                raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} daily 输出: {e}")
+
+            daily_list = daily_json.get("daily", [])
+            active_days = [d.get("date") for d in daily_list if d.get("date")]
+            active_days.sort()
+            daily_tokens_map = {d.get("date"): d.get("totalTokens", 0) for d in daily_list if d.get("date")}
 
         # 2. 读取/写入本地缓存
         cache_dir = os.path.expanduser("~/.cache/myccusage")
@@ -486,7 +677,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         cache_file = os.path.join(cache_dir, f"{agent_type}_daily.json")
 
         cache = {}
-        if os.path.exists(cache_file):
+        if os.path.exists(cache_file) and not force_refresh:
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cache = json.load(f)
@@ -496,27 +687,42 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         cache_dirty = False
         day_sessions_map = OrderedDict()
 
-        # 识别缺失或先前被污染(有Token却被记录为空列表)的历史天数，顺序安全拉取修复
-        uncached_history_days = [
-            d for d in active_days
-            if d != today_str and (d not in cache or (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0))
-        ]
-        for d in uncached_history_days:
-            s_list = fetch_single_day_sessions(ccusage_subcmd, d, times_override)
-            if s_list is not None:
-                cache[d] = s_list
-                cache_dirty = True
-
-        for d_str in active_days:
-            if d_str != today_str:
-                day_sessions_map[d_str] = cache.get(d_str, [])
-            else:
-                # 仅今日调用实时切片抓取
-                s_list = fetch_single_day_sessions(ccusage_subcmd, d_str, times_override)
-                if s_list is not None:
-                    day_sessions_map[today_str] = s_list
+        if agent_type == "workbuddy":
+            for d in active_days:
+                if not force_refresh and d != today_str and d in cache and not (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0):
+                    day_sessions_map[d] = cache[d]
                 else:
-                    day_sessions_map[today_str] = cache.get(today_str, [])
+                    s_list = wb_daily_map.get(d, [])
+                    for s in s_list:
+                        sid = s.get("sessionId")
+                        if not s.get("lastActivity") and sid in times_override:
+                            s["lastActivity"] = times_override[sid]
+                    day_sessions_map[d] = s_list
+                    if d != today_str:
+                        cache[d] = s_list
+                        cache_dirty = True
+        else:
+            # 识别缺失或先前被污染(有Token却被记录为空列表)的历史天数，顺序安全拉取修复
+            uncached_history_days = [
+                d for d in active_days
+                if d != today_str and (d not in cache or (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0))
+            ]
+            for d in uncached_history_days:
+                s_list = fetch_single_day_sessions(ccusage_subcmd, d, times_override)
+                if s_list is not None:
+                    cache[d] = s_list
+                    cache_dirty = True
+
+            for d_str in active_days:
+                if d_str != today_str:
+                    day_sessions_map[d_str] = cache.get(d_str, [])
+                else:
+                    # 仅今日调用实时切片抓取
+                    s_list = fetch_single_day_sessions(ccusage_subcmd, d_str, times_override)
+                    if s_list is not None:
+                        day_sessions_map[today_str] = s_list
+                    else:
+                        day_sessions_map[today_str] = cache.get(today_str, [])
 
         if cache_dirty:
             try:
@@ -680,7 +886,8 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
     """
     获取结构化的项目全生命周期总览数据 (返回纯 dict/list，无终端控制台输出)
     """
-    check_ccusage_installed()
+    if agent_type != "workbuddy":
+        check_ccusage_installed()
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
 
@@ -691,20 +898,24 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
-        sub_args = [ccusage_subcmd, "session", "--json"]
-        if clean_args:
-            sub_args.extend(clean_args)
+        if agent_type == "workbuddy":
+            _, raw_sessions = scan_workbuddy_data()
+        else:
+            sub_args = [ccusage_subcmd, "session", "--json"]
+            if clean_args:
+                sub_args.extend(clean_args)
 
-        res = run_ccusage(sub_args)
-        if res.returncode != 0:
-            raise RuntimeError(f"执行 ccusage {ccusage_subcmd} session 失败: {res.stderr}")
+            res = run_ccusage(sub_args)
+            if res.returncode != 0:
+                raise RuntimeError(f"执行 ccusage {ccusage_subcmd} session 失败: {res.stderr}")
 
-        try:
-            usage_data = json.loads(res.stdout)
-        except Exception as e:
-            raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} 输出: {e}")
+            try:
+                usage_data = json.loads(res.stdout)
+            except Exception as e:
+                raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} 输出: {e}")
 
-    raw_sessions = usage_data.get("sessions", [])
+            raw_sessions = usage_data.get("sessions", [])
+
     sessions = []
     grand_total = 0
     grand_input = 0

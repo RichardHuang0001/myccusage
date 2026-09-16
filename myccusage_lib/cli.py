@@ -381,7 +381,8 @@ def print_usage_hint():
     print("  --codex                 统计 OpenAI Codex")
     print("  --grok                  统计 Grok")
     print("  --pi                    统计 Pi Agent")
-    print("  --opencode              统计 OpenCode\n")
+    print("  --opencode              统计 OpenCode")
+    print("  --workbuddy             统计 WorkBuddy (腾讯旗下 AI 编程 Agent)\n")
     print("模式选项 (双模分流):")
     print("  -d, --daily             [默认] 每日会话账本模式")
     print("                          不混淆前日用量，按“此日、此 Session”精确分列，日/周小计绝不漂移")
@@ -399,6 +400,7 @@ def print_usage_hint():
     print("  myccusage --agy -s            # Antigravity 项目全生命周期总览")
     print("  myccusage --agy -s -t         # Antigravity 项目总用量大户排行")
     print("  myccusage --opencode          # OpenCode 每日会话账本")
+    print("  myccusage --workbuddy         # WorkBuddy 每日会话账本")
     print("  myccusage --web               # 一键启动 Web 前端仪表盘并自动打开浏览器")
     print("=" * 78)
 
@@ -442,6 +444,8 @@ def main(raw_args=None):
             agent_type = "pi"
         elif a == "--opencode":
             agent_type = "opencode"
+        elif a == "--workbuddy":
+            agent_type = "workbuddy"
         elif a in ("-s", "--session"):
             mode = "session"
         elif a in ("-d", "--daily"):

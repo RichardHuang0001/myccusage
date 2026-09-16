@@ -15,6 +15,7 @@ myccusage:
   - Grok:               --grok
   - Pi Agent:           --pi
   - OpenCode:           --opencode
+  - WorkBuddy:          --workbuddy
 """
 
 import os

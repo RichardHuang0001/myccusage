@@ -30,7 +30,7 @@ Automatically resolves human-readable session titles, with weekly/daily subtotal
 
 ## Features
 
-- **Multi-Agent Support**: Aggregates usage data across Google Antigravity, Claude Code, Hermes Agent, OpenAI Codex, Grok, Pi Agent, and OpenCode.
+- **Multi-Agent Support**: Aggregates usage data across Google Antigravity, Claude Code, Hermes Agent, OpenAI Codex, Grok, Pi Agent, OpenCode, and WorkBuddy.
 - **Token Breakdown & Cost Estimation**: Details Input, Output, and Cache tokens, with configurable pricing models (e.g., DeepSeek-V4.1-Flash, Gemini 3.8 Flash).
 - **Prompt Cache Analytics**: Visualizes KV cache hit rates to help you see how much context caching actually saves.
 - **Readable Session Titles**: Parses local SQLite / JSONL / Protobuf metadata to display actual task titles instead of cryptic UUIDs.
@@ -94,10 +94,11 @@ myccusage --agy
 # View Claude Code daily ledger
 myccusage --claude
 
-# View Codex / Hermes / OpenCode
+# View Codex / Hermes / OpenCode / WorkBuddy
 myccusage --codex
 myccusage --hermes
 myccusage --opencode
+myccusage --workbuddy
 
 # View project lifetime totals
 myccusage --agy -s

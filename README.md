@@ -30,7 +30,7 @@
 
 ## 主要功能
 
-- **支持多种编程 Agent**：统一查看 Google Antigravity、Claude Code、Hermes Agent、OpenAI Codex、Grok、Pi Agent、OpenCode 的使用记录。
+- **支持多种编程 Agent**：统一查看 Google Antigravity、Claude Code、Hermes Agent、OpenAI Codex、Grok、Pi Agent、OpenCode、WorkBuddy 的使用记录。
 - **Token 消耗与费用参考**：统计 Input、Cache 与 Output 构成，支持按 DeepSeek-V4.1-Flash、Gemini 3.8 Flash 等模型单价换算参考费用。
 - **缓存命中率统计**：直观查看每次会话与整体的 KV Cache 命中比例，了解缓存节省情况。
 - **自动读取会话标题**：解析本地 SQLite / JSONL / Protobuf 文件还原会话标题，避免面对难以辨识的 UUID。
@@ -94,10 +94,11 @@ myccusage --agy
 # 查看 Claude Code 每日账本
 myccusage --claude
 
-# 查看 Codex / Hermes / OpenCode
+# 查看 Codex / Hermes / OpenCode / WorkBuddy
 myccusage --codex
 myccusage --hermes
 myccusage --opencode
+myccusage --workbuddy
 
 # 查看某 Agent 各项目生命周期总消耗
 myccusage --agy -s
