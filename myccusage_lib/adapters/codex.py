@@ -6,6 +6,8 @@ OpenAI Codex 原生适配器:
 - 捕获 payload.type == "token_count" 获取各轮增量与会话大计
 """
 
+from __future__ import annotations
+
 import os
 import glob
 import json

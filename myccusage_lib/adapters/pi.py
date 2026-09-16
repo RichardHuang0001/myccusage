@@ -4,6 +4,8 @@ Pi Agent 原生适配器:
 - 流式解析 ~/.pi/agent/sessions/*/*.jsonl (带 mtime 增量缓存)
 """
 
+from __future__ import annotations
+
 import os
 import glob
 import json

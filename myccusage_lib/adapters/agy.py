@@ -8,6 +8,8 @@ Google Antigravity 适配器:
 - 支持基于 agyhub_summaries_proto.pb 与 transcript.jsonl 的原生标题与 Prompt 提取
 """
 
+from __future__ import annotations
+
 import os
 import re
 import json

@@ -5,6 +5,8 @@ Grok Build CLI 原生适配器:
 - 流式解析 ~/.grok/sessions/**/updates.jsonl 提取各轮消耗
 """
 
+from __future__ import annotations
+
 import os
 import glob
 import json

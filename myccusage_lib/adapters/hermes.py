@@ -5,6 +5,8 @@ Hermes Agent 原生适配器:
 - 读取 sessions 与 session_model_usage 表，提取毫秒级极速统计
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str

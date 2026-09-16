@@ -5,6 +5,8 @@ OpenCode 原生适配器:
 - 读取 session 表，提取毫秒级极速统计
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str

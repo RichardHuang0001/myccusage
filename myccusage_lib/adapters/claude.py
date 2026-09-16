@@ -5,6 +5,8 @@ Claude Code 原生适配器:
 - 流式提取 Token，并根据 message.id 进行精准幂等去重 (解决 thinking 与 text 重复上报)
 """
 
+from __future__ import annotations
+
 import os
 import glob
 import json

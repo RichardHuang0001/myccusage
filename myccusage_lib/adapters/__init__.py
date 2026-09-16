@@ -4,6 +4,8 @@ Agent 原生适配器统一导出注册表:
 包含 8 大 Agent 的高性能适配器实现
 """
 
+from __future__ import annotations
+
 from .base import BaseAgentAdapter
 from .workbuddy import WorkBuddyAdapter
 from .claude import ClaudeAdapter

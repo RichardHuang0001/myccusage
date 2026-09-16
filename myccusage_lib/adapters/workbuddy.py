@@ -5,6 +5,8 @@ WorkBuddy (腾讯旗下 AI 编程 Agent) 原生适配器:
 - 流式解析 ~/.workbuddy/projects/*/*.jsonl (带 mtime 增量缓存)
 """
 
+from __future__ import annotations
+
 import os
 import glob
 import json

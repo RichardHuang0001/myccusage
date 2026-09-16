@@ -6,6 +6,8 @@ Agent 适配器基类与公共工具函数:
 - 统一毫秒/秒级时间戳转换与 ISO 格式化
 """
 
+from __future__ import annotations
+
 import os
 import threading
 from datetime import datetime, timezone
