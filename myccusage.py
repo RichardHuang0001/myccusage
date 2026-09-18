@@ -22,12 +22,15 @@ import os
 import sys
 
 # 动态解析真实脚本所在目录，确保无论通过软链接、PATH 还是直接调用均能正确导入
-real_path = os.path.realpath(__file__)
-repo_root = os.path.dirname(real_path)
+# 这是为了兼容用户在任意目录下通过全局别名或软链接执行本脚本时，依然能正确定位到 myccusage_lib 包
+real_path = os.path.realpath(__file__)  # 获取真实路径，解开软链接
+repo_root = os.path.dirname(real_path)  # 获取项目根目录
 if repo_root not in sys.path:
+    # 将项目根目录注入到 sys.path 的最前面，确保优先从本项目加载模块，避免与系统其他同名包冲突
     sys.path.insert(0, repo_root)
 
-from myccusage_lib.cli import main
+from myccusage_lib.cli import main  # 导入核心 CLI 主函数
 
 if __name__ == "__main__":
+    # 作为主程序入口时，直接把控制权转交给 CLI 模块
     main()

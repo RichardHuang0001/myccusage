@@ -22,18 +22,23 @@ from datetime import datetime, timezone
 from collections import OrderedDict
 from .adapters import ADAPTERS, get_adapter
 
+# 星期常量映射
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 
+# 存储每个 Agent 对应的线程锁
 _AGENT_LOCKS = {}
+# 保护 _AGENT_LOCKS 字典的全局互斥锁
 _AGENT_LOCKS_MUTEX = threading.Lock()
 
 def get_agent_lock(agent_type):
     """获取指定 Agent 专用的互斥锁，避免同一 Agent 多个进程并发竞争本地 SQLite 数据库"""
     with _AGENT_LOCKS_MUTEX:
+        # 如果当前 Agent 类型没有对应的锁，则初始化一个
         if agent_type not in _AGENT_LOCKS:
             _AGENT_LOCKS[agent_type] = threading.Lock()
         return _AGENT_LOCKS[agent_type]
 
+# 支持的 Agent 配置字典，记录子命令及其是否原生带有时间戳信息
 SUPPORTED_AGENTS = {
     "agy": {"name": "Google Antigravity", "subcmd": "antigravity", "has_times": False},
     "claude": {"name": "Claude Code", "subcmd": "claude", "has_times": False},
@@ -51,40 +56,65 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
     - 输入（未命中/Cache Miss）：¥2.00 / 1M Tokens
     - 输入（命中缓存/Cache Hit）：¥0.04 / 1M Tokens
     - 输出（含思维链/Output+Reasoning）：¥8.00 / 1M Tokens
+    
+    参数:
+        input_tokens: 未命中缓存的输入 Token 数
+        cache_read_tokens: 命中缓存的输入 Token 数
+        total_output_tokens: 所有的输出 Token 数
+    返回:
+        按 CNY 计价的等效费用
     """
+    # 按照每百万 token 的价格进行折算
     cny = (input_tokens * 2.0 + cache_read_tokens * 0.04 + total_output_tokens * 8.0) / 1_000_000
     return cny
 
 def format_time(iso_str):
+    """
+    格式化 ISO 时间字符串为简短的显示格式 (MM-DD HH:MM)
+    
+    参数:
+        iso_str: ISO 8601 格式的时间字符串
+    返回:
+        简短时间字符串，若解析失败则返回原始日期的前 10 位
+    """
     if not iso_str:
         return "--"
     try:
+        # 兼容以 Z 结尾的 UTC 时间，将其转换为本地时区时间
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone()
         return dt.strftime("%m-%d %H:%M")
     except Exception:
+        # 解析异常时直接截取前 10 个字符兜底
         return iso_str[:10]
 
 # ==================== 标题与元数据提取模块 ====================
 
 def get_agy_titles():
-    """提取 Antigravity 会话标题"""
+    """
+    提取 Antigravity 会话标题。
+    通过读取内部 protobuf 缓存以及本地日志的 jsonl 文件来抓取会话请求的第一行作为标题。
+    """
     titles = {}
     proto_path = os.path.expanduser("~/.gemini/antigravity/agyhub_summaries_proto.pb")
     if os.path.exists(proto_path):
         try:
             with open(proto_path, "rb") as f:
                 data = f.read()
+            # 匹配典型的 UUID 作为会话 ID
             pattern = re.compile(rb"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
             matches = list(pattern.finditer(data))
             for i, m in enumerate(matches):
                 uid = m.group(1).decode("ascii")
                 start = m.end()
+                # 寻找下个匹配，限定提取切片的范围
                 end = matches[i+1].start() if i + 1 < len(matches) else len(data)
                 slice_data = data[start:min(start+300, end)]
+                # 使用正则查找长度大于等于4的文本块
                 text_matches = re.findall(rb"[\x20-\x7e\x80-\xff]{4,}", slice_data)
                 for tm in text_matches:
                     try:
                         t = tm.decode("utf-8").strip().strip("\"'%,!\t ")
+                        # 过滤掉非实质内容的字符串
                         if (len(t) > 3 and not re.match(r"^[0-9a-f-]{36}$", t) 
                             and not t.startswith("outside") 
                             and not t.startswith("file://") 
@@ -100,10 +130,12 @@ def get_agy_titles():
         except Exception:
             pass
 
+    # 遍历基于日志文件的补充匹配
     logs_glob = os.path.expanduser("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl")
     for log_path in glob.glob(logs_glob):
         parts = os.path.normpath(log_path).split(os.sep)
         uid = parts[-4] if len(parts) >= 4 else ""
+        # 当尚未提取到有效标题或现有标题看起来不完整时进行解析
         if uid not in titles or titles[uid].endswith(":") or len(titles[uid]) < 4:
             try:
                 with open(log_path, "r", encoding="utf-8") as f:
@@ -111,10 +143,12 @@ def get_agy_titles():
                     if first_line:
                         obj = json.loads(first_line)
                         content = obj.get("content", "")
+                        # 优先从 USER_REQUEST 标签中提取内容
                         if "<USER_REQUEST>" in content:
                             req = content.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0].strip()
                         else:
                             req = content.strip()
+                        # 取首行作为标题限制长度为 60
                         first_line_clean = req.split("\n")[0][:60].strip()
                         if first_line_clean:
                             titles[uid] = first_line_clean
@@ -123,7 +157,10 @@ def get_agy_titles():
     return titles
 
 def get_claude_titles():
-    """提取 Claude Code 会话标题与用户 Prompt"""
+    """
+    提取 Claude Code 会话标题与用户 Prompt。
+    主要从 history.jsonl 与各个 project 的 jsonl 日志中提取 display 或用户首句。
+    """
     titles = {}
     history_file = os.path.expanduser("~/.claude/history.jsonl")
     if os.path.exists(history_file):
@@ -141,6 +178,7 @@ def get_claude_titles():
         except Exception:
             pass
 
+    # 扫描 projects 目录补充未在 history.jsonl 中的标题
     for p in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
         sid = os.path.basename(p).replace(".jsonl", "")
         if sid not in titles or titles[sid].startswith("/"):
@@ -148,6 +186,7 @@ def get_claude_titles():
                 with open(p, "r", encoding="utf-8") as f:
                     for line in f:
                         obj = json.loads(line)
+                        # 寻找类型为 user 的消息，提取其中的内容
                         if obj.get("type") == "user":
                             msg = obj.get("message", {})
                             cnt = msg.get("content")
@@ -166,7 +205,11 @@ def get_claude_titles():
     return titles
 
 def get_hermes_titles_and_times():
-    """提取 Hermes 会话标题与结束时间"""
+    """
+    提取 Hermes 会话标题与结束时间。
+    解析内部 SQLite 数据库，获取 started_at/ended_at 以及标题字段。
+    返回 (标题字典, 时间字典) 的元组。
+    """
     titles = {}
     times = {}
     db_path = os.path.expanduser("~/.hermes/state.db")
@@ -176,6 +219,7 @@ def get_hermes_titles_and_times():
             c = conn.cursor()
             for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
                 sid, st, et, title = row
+                # 优先使用结束时间作为最后活动时间
                 last_t = et or st
                 if last_t:
                     iso_time = datetime.fromtimestamp(last_t, timezone.utc).isoformat()
@@ -188,7 +232,10 @@ def get_hermes_titles_and_times():
     return titles, times
 
 def get_codex_titles():
-    """提取 OpenAI Codex 会话标题与用户 Prompt"""
+    """
+    提取 OpenAI Codex 会话标题与用户 Prompt。
+    包括从 session_index.jsonl 加载以及从归档、现存的 jsonl 日志提取内容。
+    """
     titles = {}
     index_map = {}
     index_file = os.path.expanduser("~/.codex/session_index.jsonl")
@@ -206,6 +253,7 @@ def get_codex_titles():
             pass
 
     def extract_codex_prompt(text):
+        """清洗提取 Codex 用户侧原始 prompt"""
         if not text:
             return ""
         if "## My request for Codex:" in text:
@@ -216,6 +264,7 @@ def get_codex_titles():
     session_files = glob.glob(os.path.expanduser("~/.codex/sessions/**/*.jsonl"), recursive=True)
     session_files += glob.glob(os.path.expanduser("~/.codex/archived_sessions/*.jsonl"))
 
+    # 遍历各个会话文件，解析消息以获取标题
     for p in session_files:
         rel = p.replace(os.path.expanduser("~/.codex/sessions/"), "").replace(".jsonl", "")
         base = os.path.basename(p).replace(".jsonl", "")
@@ -241,6 +290,7 @@ def get_codex_titles():
                                 for part in pl.get("content", []):
                                     if isinstance(part, dict) and part.get("type") == "input_text":
                                         txt = part.get("text", "")
+                                        # 过滤系统上下文
                                         if "AGENTS.md" in txt or "<environment_context>" in txt:
                                             continue
                                         clean = extract_codex_prompt(txt)
@@ -253,6 +303,7 @@ def get_codex_titles():
                             pass
             except Exception:
                 pass
+        # 为同个会话的多种可能 ID 添加映射，确保命中
         if title:
             titles[rel] = title
             titles[base] = title
@@ -261,7 +312,10 @@ def get_codex_titles():
     return titles
 
 def get_grok_titles():
-    """提取 Grok 会话标题与用户 Prompt"""
+    """
+    提取 Grok 会话标题与用户 Prompt。
+    综合读取 session_search.sqlite、summary.json 和 prompt_history.jsonl 进行标题捕获。
+    """
     titles = {}
     db_path = os.path.expanduser("~/.grok/sessions/session_search.sqlite")
     if os.path.exists(db_path):
@@ -305,7 +359,10 @@ def get_grok_titles():
     return titles
 
 def get_pi_titles():
-    """提取 Pi Agent 会话用户 Prompt"""
+    """
+    提取 Pi Agent 会话用户 Prompt 作为标题。
+    解析对应的 jsonl 文件中的 user 消息。
+    """
     titles = {}
     for p in glob.glob(os.path.expanduser("~/.pi/agent/sessions/*/*.jsonl")):
         sid = os.path.basename(p).split("_")[-1].replace(".jsonl", "")
@@ -333,7 +390,10 @@ def get_pi_titles():
     return titles
 
 def get_opencode_titles_and_times():
-    """提取 OpenCode 会话标题与最后活跃时间"""
+    """
+    提取 OpenCode 会话标题与最后活跃时间。
+    解析 opencode.db 数据库获取相关字段信息。
+    """
     titles = {}
     times = {}
     db_path = os.path.expanduser("~/.local/share/opencode/opencode.db")
@@ -355,21 +415,27 @@ def get_opencode_titles_and_times():
     return titles, times
 
 def get_workbuddy_titles_and_times():
-    """提取 WorkBuddy 会话标题与最后活跃时间"""
+    """
+    提取 WorkBuddy 会话标题与最后活跃时间。
+    从 SQLite 数据库获取主记录，若缺失则从项目的 JSONL 补充扫描。
+    """
     titles = {}
     times = {}
     wb_dir = os.path.expanduser("~/.workbuddy")
     db_path = os.path.join(wb_dir, "workbuddy.db")
     if os.path.exists(db_path):
         try:
+            # 开启只读模式防止争锁
             uri = f"file:{db_path}?mode=ro"
             conn = sqlite3.connect(uri, uri=True, timeout=3.0)
             cur = conn.cursor()
             for row in cur.execute("SELECT id, title, custom_title, created_at, updated_at, last_activity_at FROM sessions"):
                 sid, t, ct, ca, ua, la = row
+                # 优先使用 custom_title
                 title = ct or t
                 if title and title.strip():
                     titles[sid] = title.strip()
+                # 计算出最后活跃时间并转换为 ISO 格式
                 ts = la or ua or ca
                 if ts:
                     times[sid] = datetime.fromtimestamp(ts / 1000.0, timezone.utc).isoformat()
@@ -407,7 +473,9 @@ def get_workbuddy_titles_and_times():
                 pass
     return titles, times
 
+# 用于保护文件流式解析内存状态的锁
 _WB_SCAN_LOCK = threading.Lock()
+# 文件修改时间及结果的缓存，避免重复全量读取
 _WB_FILES_CACHE = {}  # fpath -> (mtime, size, list_of_records)
 
 def scan_workbuddy_data():
@@ -415,6 +483,8 @@ def scan_workbuddy_data():
     高性能流式扫描 WorkBuddy 项目日志，返回 (daily_map, session_list)
     - daily_map: { "YYYY-MM-DD": [ {sessionId, totalTokens, inputTokens, cacheReadTokens, outputTokens, lastActivity}, ... ] }
     - session_list: [ {sessionId, totalTokens, inputTokens, cacheReadTokens, outputTokens, lastActivity}, ... ]
+    
+    利用文件大小和修改时间 (_WB_FILES_CACHE) 进行缓存感知，大幅降低 IO 压力。
     """
     wb_dir = os.path.expanduser("~/.workbuddy")
     if not os.path.exists(wb_dir):
@@ -445,6 +515,7 @@ def scan_workbuddy_data():
 
             mtime, size = stat.st_mtime, stat.st_size
             cached = _WB_FILES_CACHE.get(fpath)
+            # 缓存命中：只有修改时间与大小全一致时直接复用解析结果
             if cached and cached[0] == mtime and cached[1] == size:
                 records = cached[2]
             else:
@@ -453,6 +524,7 @@ def scan_workbuddy_data():
                 try:
                     with open(fpath, "r", encoding="utf-8") as f:
                         for line in f:
+                            # 提前短路判断以加速无关行过滤
                             if not line.strip() or ("usage" not in line and "rawUsage" not in line):
                                 continue
                             try:
@@ -472,6 +544,7 @@ def scan_workbuddy_data():
                             date_str = dt.strftime("%Y-%m-%d")
                             iso_str = datetime.fromtimestamp(ts / 1000.0, timezone.utc).isoformat()
 
+                            # 容错处理不同的 usage 数据结构
                             if ru:
                                 hit = ru.get("prompt_cache_hit_tokens", 0)
                                 miss = ru.get("prompt_cache_miss_tokens", 0)
@@ -490,10 +563,11 @@ def scan_workbuddy_data():
                             records.append((sid, date_str, iso_str, miss, hit, out, tot))
                 except Exception:
                     pass
+                # 将解析结果写回缓存
                 _WB_FILES_CACHE[fpath] = (mtime, size, records)
 
             for sid, date_str, iso_str, miss, hit, out, tot in records:
-                # 每日切片
+                # 每日切片数据构建：累加各项 Token 并更新最后活动时间
                 if date_str not in daily_map:
                     daily_map[date_str] = {}
                 if sid not in daily_map[date_str]:
@@ -514,7 +588,7 @@ def scan_workbuddy_data():
                 if iso_str > ds["lastActivity"]:
                     ds["lastActivity"] = iso_str
 
-                # 全生命周期会话
+                # 全生命周期会话数据构建：累加整个会话的 Token
                 if sid not in session_map:
                     session_map[sid] = {
                         "sessionId": sid,
@@ -532,12 +606,13 @@ def scan_workbuddy_data():
                 if iso_str > ss["lastActivity"]:
                     ss["lastActivity"] = iso_str
 
+    # 转化为数组列表形式以适配外层接口
     daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
     session_res = list(session_map.values())
     return daily_res, session_res
 
 def get_agent_metadata(agent_type):
-    """根据 agent 类型获取会话标题映射与时间修正映射"""
+    """根据 agent 类型路由调用对应的元数据抓取逻辑，返回 (会话标题映射, 时间修正映射)"""
     titles = {}
     times_override = {}
     if agent_type == "agy":
@@ -559,15 +634,21 @@ def get_agent_metadata(agent_type):
     return titles, times_override
 
 def resolve_title(sid, titles):
+    """
+    通过会话 ID 查找并返回其人类可读标题。
+    处理部分日志包含前缀或完整路径导致直接匹配不上的情况。
+    """
     if not sid:
         return "（未命名/系统会话）"
     if sid in titles:
         return titles[sid]
+    # 尝试提取 UUID 进行匹配
     parts = sid.split("-")
     if len(parts) >= 5:
         uuid = "-".join(parts[-5:])
         if uuid in titles:
             return titles[uuid]
+    # 尝试使用 base filename 匹配
     base = os.path.basename(sid)
     if base in titles:
         return titles[base]
@@ -585,9 +666,16 @@ def run_ccusage(args, capture_output=True, text=True, max_retries=3):
     - 优先追加 --offline 参数阻断冗余公网 LiteLLM 模型价格拉取 (提速 10x+)
     - 若遇到 database is locked 错误，支持毫秒级退避重试 (解决 SQLite 读写瞬态争抢)
     - 若旧版本不支持 --offline 则自动优雅降级回退执行
+    
+    参数:
+        args: 传递给 ccusage 命令的参数列表
+        capture_output: 是否捕获输出
+        text: 是否以文本模式返回
+        max_retries: 最大重试次数
     """
     check_ccusage_installed()
     cmd = ["ccusage"] + list(args)
+    # 强制增加离线参数，提升性能
     if "--offline" not in cmd:
         cmd.append("--offline")
 
@@ -601,7 +689,7 @@ def run_ccusage(args, capture_output=True, text=True, max_retries=3):
                 time.sleep(0.3 * (attempt + 1))
                 continue
 
-        # 检查是否为旧版本不识别 --offline
+        # 检查是否为旧版本不识别 --offline 导致报错，降级去掉离线标志并重跑
         if res.returncode != 0 and ("unknown" in stderr_lower or "unexpected" in stderr_lower):
             cmd_fallback = [arg for arg in cmd if arg != "--offline"]
             res = subprocess.run(cmd_fallback, capture_output=capture_output, text=text)
@@ -614,11 +702,12 @@ def fetch_single_day_sessions(ccusage_subcmd, date_str, times_override):
     """获取指定日期的精确切片会话消耗（不含历史前日累积）"""
     res = run_ccusage([ccusage_subcmd, "session", "-s", date_str, "-u", date_str, "--json"])
     if res.returncode != 0:
-        # 失败时返回 None 而非 []，严格区分“提取错误”与“该日无数据”，防止缓存污染
+        # 失败时返回 None 而非 []，严格区分“提取错误”与“该日无数据”，防止缓存污染 (缓存穿透防护)
         return None
     try:
         data = json.loads(res.stdout)
         sessions = data.get("sessions", [])
+        # 将已有的 time 修正补充进 session 数据
         for s in sessions:
             sid = s.get("sessionId")
             if not s.get("lastActivity") and sid in times_override:
@@ -630,6 +719,11 @@ def fetch_single_day_sessions(ccusage_subcmd, date_str, times_override):
 def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     """
     获取结构化的每日会话账本数据 (返回纯 dict/list，无终端控制台输出)
+    
+    主要逻辑：
+    1. 优先使用原生 adapter 获取数据源，如果不可用则回退到 ccusage CLI 调用。
+    2. 基于日期处理本地结果缓存（JSON 文件），未缓存历史日则进行增量刷新。
+    3. 合并各日期的会话切片，汇总得出总体用量、成本统计和以周/日为单位的图表结构。
     """
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
@@ -638,6 +732,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     display_name = info["name"]
     ccusage_subcmd = info["subcmd"]
 
+    # 尝试加载高效率原生适配器
     adapter = ADAPTERS.get(agent_type)
     if adapter:
         titles, times_override = adapter.get_titles_and_times()
@@ -669,7 +764,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             active_days.sort()
             daily_tokens_map = {d.get("date"): d.get("totalTokens", 0) for d in daily_list if d.get("date")}
 
-        # 2. 读取/写入本地缓存
+        # 2. 读取/写入本地缓存 (两级缓存设计：保障历史日查询极致速度)
         cache_dir = os.path.expanduser("~/.cache/myccusage")
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, f"{agent_type}_daily.json")
@@ -687,9 +782,11 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
 
         if adapter:
             for d in active_days:
+                # 缓存命中：如果不是今天且在缓存中，且确保缓存数据不是异常的空列表
                 if not force_refresh and d != today_str and d in cache and not (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0):
                     day_sessions_map[d] = cache[d]
                 else:
+                    # 缓存未命中：从原生数据源构建并更新缓存
                     s_list = native_daily_map.get(d, [])
                     for s in s_list:
                         sid = s.get("sessionId")
@@ -700,20 +797,24 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
                         cache[d] = s_list
                         cache_dirty = True
         else:
+            # 外部回退的数据处理：确定哪些历史日子不在缓存中
             uncached_history_days = [
                 d for d in active_days
                 if d != today_str and (d not in cache or (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0))
             ]
+            # 增量拉取缺失的旧日子并刷新本地缓存字典
             for d in uncached_history_days:
                 s_list = fetch_single_day_sessions(ccusage_subcmd, d, times_override)
                 if s_list is not None:
                     cache[d] = s_list
                     cache_dirty = True
 
+            # 合并缓存和当天新获取的数据
             for d_str in active_days:
                 if d_str != today_str:
                     day_sessions_map[d_str] = cache.get(d_str, [])
                 else:
+                    # 当日数据总是重新拉取以保证最新，不过若拉取失败也尝试回退用缓存
                     s_list = fetch_single_day_sessions(ccusage_subcmd, d_str, times_override)
                     if s_list is not None:
                         day_sessions_map[today_str] = s_list
@@ -721,6 +822,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
                         day_sessions_map[today_str] = cache.get(today_str, [])
 
         if cache_dirty:
+            # 刷新磁盘级缓存文件
             try:
                 with open(cache_file, "w", encoding="utf-8") as f:
                     json.dump(cache, f)
@@ -740,6 +842,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     flat_records = []
 
     global_idx = 1
+    # 逐日进行聚合并归入对应的周维度中
     for d_str in active_days:
         try:
             dt = datetime.strptime(d_str, "%Y-%m-%d")
@@ -807,7 +910,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             day_output += out
             day_cost += cost
 
-        # 日小计统计
+        # 日小计统计构建
         day_summary = {
             "date": d_str,
             "weekday": weekday_char,
@@ -849,6 +952,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     for w in weeks:
         w["costCny"] = round(w["costCny"], 2)
 
+    # 根据请求处理排序逻辑
     if sort_by_tokens:
         flat_records.sort(key=lambda x: x.get("totalTokens", 0), reverse=True)
         # 重新为 flat_records 编号
@@ -881,6 +985,9 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
 def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
     """
     获取结构化的项目全生命周期总览数据 (返回纯 dict/list，无终端控制台输出)
+    
+    提取整个项目中每个独立 Session / Thread 的整体消耗，不按天进行切分。
+    支持用原生适配器快速构建，或者基于 ccusage CLI 命令提取。
     """
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
@@ -897,6 +1004,7 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
+        # 分支：优先适配器原生取数据，否则回退执行命令
         if adapter:
             _, raw_sessions = adapter.fetch_data()
         else:
@@ -963,7 +1071,7 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
         for idx, s in enumerate(sessions, 1):
             s["index"] = idx
 
-        # 分周与分日聚合
+        # 分周与分日聚合数据构建：遍历 session 划分入对应周与日的桶
         weeks_dict = OrderedDict()
         for s in sessions:
             iso = s.get("lastActivity")
@@ -1061,7 +1169,12 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
     }
 
 def get_all_agents_summary():
-    """汇总所有支持的 Agent 的用量与概览，支持 Web 端全局看板 (多线程并发调度极速版)"""
+    """
+    汇总所有支持的 Agent 的用量与概览，支持 Web 端全局看板 (多线程并发调度极速版)
+    
+    使用 ThreadPoolExecutor 进行并发调度，将每一个 Agent 的日常抓取计算分发到独立的线程执行。
+    大大缩减了当有多个外部/庞大日志分析任务堆叠时的整体时延。
+    """
     agents_summary = []
     grand_tokens = 0
     grand_input = 0
@@ -1071,6 +1184,7 @@ def get_all_agents_summary():
     grand_sessions = 0
 
     def _fetch_single_agent(agent_id, agent_meta):
+        """线程运行任务：独立获取并总结单个 Agent 的使用详情"""
         try:
             data = get_daily_data(agent_id)
             sum_info = data["summary"]
@@ -1103,12 +1217,14 @@ def get_all_agents_summary():
             }
 
     agent_ids = list(SUPPORTED_AGENTS.keys())
+    # 启用线程池并发执行各 Agent 抓取任务
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agent_ids)) as pool:
         future_map = {
             pool.submit(_fetch_single_agent, aid, SUPPORTED_AGENTS[aid]): aid
             for aid in agent_ids
         }
         results_by_id = {}
+        # 收集所有的并发执行结果
         for fut in concurrent.futures.as_completed(future_map):
             aid = future_map[fut]
             results_by_id[aid] = fut.result()

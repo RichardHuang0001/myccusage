@@ -12,25 +12,30 @@ import sqlite3
 from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str
 
 class OpenCodeAdapter(BaseAgentAdapter):
+    """OpenCode 原生适配器，读取 SQLite 获取数据"""
     agent_id = "opencode"
     display_name = "OpenCode"
     has_times = True
 
     def __init__(self):
+        """初始化 OpenCode 数据库路径"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.local/share/opencode")
         self.db_path = os.path.join(self.base_dir, "opencode.db")
 
     def is_available(self) -> bool:
+        """检查数据库文件是否存在"""
         return os.path.exists(self.db_path)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 session 表提取标题及时间信息"""
         titles = {}
         times = {}
         if not self.is_available():
             return titles, times
         try:
             uri = f"file:{self.db_path}?mode=ro"
+            # 建立只读连接，保障读操作不干扰数据库写入
             conn = sqlite3.connect(uri, uri=True, timeout=3.0)
             cur = conn.cursor()
             cur.execute("SELECT id, title, time_created, time_updated FROM session")
@@ -46,6 +51,9 @@ class OpenCodeAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        查询 OpenCode 数据库，提取统计数据。
+        """
         if not self.is_available():
             return {}, []
 
@@ -76,9 +84,10 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 date_str = ms_to_date_str(act_time) if act_time else "1970-01-01"
                 iso_str = ms_to_iso(act_time) if act_time else ""
                 # cw (cache_write) 计入 inputTokens 或 totalTokens
+                # 这里做数据平整化处理
                 tot = inp + cr + cw + out
 
-                # 每日切片记录
+                # 每日切片记录 (按天聚合)
                 if date_str not in daily_map:
                     daily_map[date_str] = []
                 daily_map[date_str].append({

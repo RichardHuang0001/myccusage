@@ -16,19 +16,23 @@ from datetime import datetime, timezone
 from .base import BaseAgentAdapter
 
 class CodexAdapter(BaseAgentAdapter):
+    """OpenAI Codex 的本地日志数据适配器"""
     agent_id = "codex"
     display_name = "OpenAI Codex"
     has_times = False
 
     def __init__(self):
+        """初始化目录结构"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.codex")
         self.sessions_dir = os.path.join(self.base_dir, "sessions")
 
     def is_available(self) -> bool:
+        """检查 codex 配置目录是否存在"""
         return os.path.exists(self.base_dir)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 session_index.jsonl 和会话文件中提取标题和时间"""
         titles = {}
         times = {}
         if not self.is_available():
@@ -50,6 +54,7 @@ class CodexAdapter(BaseAgentAdapter):
                 pass
 
         def extract_codex_prompt(text):
+            """内部辅助方法：提取 Codex prompt 文本"""
             if not text:
                 return ""
             if "## My request for Codex:" in text:
@@ -105,6 +110,10 @@ class CodexAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        提取 Codex 消耗数据。
+        通过捕获 token_count 的累计增量进行差分计算。
+        """
         if not self.is_available():
             return {}, []
 
@@ -123,6 +132,7 @@ class CodexAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+                # 使用 mtime 和 size 作为判断条件，避免重复解析已处理过的日志
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
                 else:
@@ -169,6 +179,7 @@ class CodexAdapter(BaseAgentAdapter):
                                 cur_cached = tot.get("cached_input_tokens", 0)
                                 cur_out = tot.get("output_tokens", 0)
 
+                                # 计算累计增量差分
                                 delta_raw_inp = max(0, cur_raw_inp - prev_raw_inp)
                                 delta_cached = max(0, cur_cached - prev_cached)
                                 delta_out = max(0, cur_out - prev_out)
@@ -183,10 +194,11 @@ class CodexAdapter(BaseAgentAdapter):
                                     prev_out = cur_out
                     except Exception:
                         pass
+                    # 将提取到的增量记录计入防抖缓存
                     self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot in records:
-                    # 每日切片
+                    # 每日切片数据聚合
                     if date_str not in daily_map:
                         daily_map[date_str] = {}
                     if sid not in daily_map[date_str]:
@@ -207,7 +219,7 @@ class CodexAdapter(BaseAgentAdapter):
                     if iso_str > ds["lastActivity"]:
                         ds["lastActivity"] = iso_str
 
-                    # 项目生命周期汇总
+                    # 项目生命周期汇总 (全生命周期累加计算)
                     if sid not in session_map:
                         session_map[sid] = {
                             "sessionId": sid,

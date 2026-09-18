@@ -18,53 +18,95 @@ from .core import (
 )
 
 def display_len(s):
+    """
+    计算字符串在终端中的实际显示宽度。
+    基于 East Asian Width（东亚宽度）属性，全角字符（如中文、日文、宽标点等）
+    在终端中通常占据 2 个字符宽度，而半角字符占据 1 个字符宽度。
+    """
     length = 0
     for ch in s:
+        # 获取字符的东亚宽度属性
         w = unicodedata.east_asian_width(ch)
+        # "F" 代表 Fullwidth（全角），"W" 代表 Wide（宽字符）
+        # 满足这两种情况的字符在终端占2列宽，否则占1列宽
         length += 2 if w in ("F", "W") else 1
     return length
 
 def pad_str(s, width, align="left"):
+    """
+    按指定宽度和对齐方式填充字符串，确保中英文混合情况下的严格对齐。
+    """
+    # 获取字符串的实际显示宽度
     dlen = display_len(s)
+    # 计算需要填充的空格数，若字符串宽度已超过指定宽度则不填充
     pad = max(0, width - dlen)
+    
     if align == "right":
+        # 右对齐：在左侧填充空格
         return " " * pad + s
     elif align == "center":
+        # 居中对齐：将空格均分到左右两侧
         left = pad // 2
         right = pad - left
         return " " * left + s + " " * right
     else:
+        # 左对齐（默认）：在右侧填充空格
         return s + " " * pad
 
 def format_tokens(n):
+    """
+    将 Token 数量格式化为易读的缩写形式（如 K、M）。
+    """
     if n is None or n == 0:
         return "0"
+    
+    # 大于等于一百万的数字使用 "M"（兆）后缀
     if n >= 1_000_000:
         return f"{n / 1_000_000:.2f}M"
+    # 大于等于一千的数字使用 "K"（千）后缀
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
+    
     return str(n)
 
 def format_hitrate(cache, inp):
+    """
+    计算并格式化缓存命中率，以百分比形式展示。
+    公式：缓存 Token 数 / (缓存 Token 数 + 输入 Token 数)
+    """
+    # 计算总输入量（缓存项加新输入项），防范 None 值情况
     denom = (cache or 0) + (inp or 0)
+    
     if denom <= 0:
         return "0.0%"
+        
+    # 计算百分比并保留一位小数
     rate = (cache / denom) * 100.0
     return f"{rate:.1f}%"
 
 def truncate_title(title, max_w):
+    """
+    智能截断标题以适应终端列宽。
+    考虑中英文混合长度，并在截断末尾添加省略号 "…" 提示。
+    """
+    # 仅当标题实际显示宽度大于最大宽度限制时才进行截断
     if display_len(title) > max_w:
         truncated = ""
         for ch in title:
+            # 预判：若加入当前字符及省略号后的总宽超限，则停止添加
             if display_len(truncated + ch + "…") > max_w:
                 break
             truncated += ch
         return truncated + "…"
+    
     return title
 
 def render_daily_table(data):
     """渲染每日账本模式的终端表格"""
+    # 动态获取终端宽度，预设后备大小为 (118列, 24行)
     term_width = shutil.get_terminal_size((118, 24)).columns
+    
+    # 预设各个数据列的固定宽度
     w_rank = 5
     w_time = 13
     w_total = 8
@@ -74,20 +116,28 @@ def render_daily_table(data):
     w_hit = 7
     w_cost = 11
     
+    # 计算非标题列的总宽度（包含列之间的分隔符宽度等预估常数 24）
     fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_cost + 24
+    
+    # 将剩余空间全部分配给会话标题列，并保证最小宽度为 24
     w_title = max(24, term_width - fixed_width)
+    
+    # 确定整个表格的最终总宽度，避免超出终端边界
     total_table_width = min(term_width, fixed_width + w_title)
 
     display_name = data["displayName"]
     sort_by_tokens = data["sortByTokens"]
     sum_info = data["summary"]
 
+    # 分支一：按 Token 消耗量排序的展示逻辑（不分层级，平铺展示）
     if sort_by_tokens:
         flat_records = data["flatRecords"]
         print("=" * total_table_width)
         print(f"  {display_name} 单日会话消耗排行 (共 {len(flat_records)} 条日度会话记录 - 按当日消耗排序)")
         print("  * 模式：[-d / --daily] 每日会话账本（不混淆前日用量，仅算当日实际消耗）")
         print("=" * total_table_width)
+        
+        # 拼接表头，严格使用之前分配的各列宽度进行居中或对齐
         header = (
             pad_str("序号", w_rank, "center") + " │ " +
             pad_str("最近访问", w_time, "center") + " │ " +
@@ -102,7 +152,9 @@ def render_daily_table(data):
         print(header)
         print("─" * total_table_width)
 
+        # 遍历扁平化的记录进行单行渲染
         for r in flat_records:
+            # 根据动态分配的标题列宽进行智能截断
             t_str = truncate_title(r["title"], w_title)
             print(
                 pad_str(str(r["index"]), w_rank, "center") + " │ " +
@@ -116,6 +168,8 @@ def render_daily_table(data):
                 pad_str(t_str, w_title, "left")
             )
         print("─" * total_table_width)
+        
+        # 打印全周期合计行
         print(
             pad_str("汇总", w_rank, "center") + " │ " +
             pad_str("--", w_time, "center") + " │ " +
@@ -130,13 +184,14 @@ def render_daily_table(data):
         print("=" * total_table_width)
         return
 
-    # 默认按时间正序
+    # 分支二：默认按时间正序排列的三级层次渲染（记录 → 日小计 → 周小计 → 全周期合计）
     print("=" * total_table_width)
     print(f"  {display_name} 每日会话账本 (共 {data['activeDaysCount']} 个活动日, {data['totalRecordsCount']} 笔日度会话)")
     print("  * 模式：[-d / --daily 默认] 不混淆前日用量，精准分列“此日、此 Session”的实际发生额")
     print("  * 计价：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
     print("=" * total_table_width)
 
+    # 渲染主表头
     header = (
         pad_str("序号", w_rank, "center") + " │ " +
         pad_str("访问时间", w_time, "center") + " │ " +
@@ -151,8 +206,10 @@ def render_daily_table(data):
     print(header)
     print("─" * total_table_width)
 
+    # 层级遍历：周 -> 日 -> 记录
     for week in data["weeks"]:
         for day in week["days"]:
+            # 渲染第一级：最细粒度的单笔会话记录
             for r in day["records"]:
                 t_str = truncate_title(r["title"], w_title)
                 row = (
@@ -168,7 +225,7 @@ def render_daily_table(data):
                 )
                 print(row)
 
-            # 日小计
+            # 渲染第二级：日小计（统计当日内所有会话的消耗汇总）
             day_short = day["date"][5:] if len(day["date"]) >= 10 else day["date"]
             day_time_label = f"{day_short}({day['weekday']}) 小计"
             day_subtotal_row = (
@@ -183,9 +240,10 @@ def render_daily_table(data):
                 pad_str(f"当日净消耗 ({day['count']} 笔会话)", w_title, "left")
             )
             print(day_subtotal_row)
+            # 使用弱分隔符表示日结束
             print("·" * total_table_width)
 
-        # 周小计
+        # 渲染第三级：周小计（统计当周内所有活动日的消耗汇总）
         week_subtotal_row = (
             pad_str("周计", w_rank, "center") + " │ " +
             pad_str(f"{week['weekKey']} 小计", w_time, "center") + " │ " +
@@ -198,9 +256,10 @@ def render_daily_table(data):
             pad_str(f"本周净消耗 ({week['count']} 笔会话)", w_title, "left")
         )
         print(week_subtotal_row)
+        # 使用强分隔符表示周结束
         print("─" * total_table_width)
 
-    # 全周期合计
+    # 渲染第四级：全周期合计（对所有历史数据的全局统计汇总）
     grand_total_row = (
         pad_str("汇总", w_rank, "center") + " │ " +
         pad_str("全周期合计", w_time, "center") + " │ " +
@@ -217,7 +276,10 @@ def render_daily_table(data):
 
 def render_session_table(data):
     """渲染项目总览模式的终端表格"""
+    # 动态获取终端宽度，实现响应式排版
     term_width = shutil.get_terminal_size((118, 24)).columns
+    
+    # 预设固定的字段宽度
     w_rank = 5
     w_time = 13
     w_total = 8
@@ -227,6 +289,7 @@ def render_session_table(data):
     w_hit = 7
     w_cost = 11
     
+    # 计算并分配标题列所需的剩余宽度
     fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_cost + 24
     w_title = max(24, term_width - fixed_width)
     total_table_width = min(term_width, fixed_width + w_title)
@@ -236,6 +299,7 @@ def render_session_table(data):
     sum_info = data["summary"]
     sessions = data["flatRecords"]
 
+    # 排行榜分支：按 Token 全局排序平铺展示
     if sort_by_tokens:
         print("=" * total_table_width)
         print(f"  {display_name} 项目/会话总用量排行 (共 {len(sessions)} 个 Session - 按全生命周期 Token 消耗降序)")
@@ -255,6 +319,7 @@ def render_session_table(data):
         print(header)
         print("─" * total_table_width)
 
+        # 遍历汇总后的会话进行展示
         for s in sessions:
             t_str = truncate_title(s["title"], w_title)
             print(
@@ -269,6 +334,8 @@ def render_session_table(data):
                 pad_str(t_str, w_title, "left")
             )
         print("─" * total_table_width)
+        
+        # 打印全周期合计行
         print(
             pad_str("汇总", w_rank, "center") + " │ " +
             pad_str("--", w_time, "center") + " │ " +
@@ -283,7 +350,7 @@ def render_session_table(data):
         print("=" * total_table_width)
         return
 
-    # 默认时间正序
+    # 时序浏览分支：默认按最近访问时间正序，分级统计渲染
     print("=" * total_table_width)
     print(f"  {display_name} 项目/会话总览 (共 {len(sessions)} 个 Session - 全生命周期累计消耗)")
     print("  * 模式：[-s / --session] 专注每个任务/Project 的全生命周期总耗费（按最新访问时间排序）")
@@ -304,9 +371,13 @@ def render_session_table(data):
     print(header)
     print("─" * total_table_width)
 
+    # 全局累加的序号，用作总览展示时的唯一编号
     global_idx = 1
+    
+    # 嵌套遍历：周 -> 日 -> Session记录
     for week in data["weeks"]:
         for day in week["days"]:
+            # 第一级：呈现单个项目的累计统计概况
             for s in day["records"]:
                 t_str = truncate_title(s["title"], w_title)
                 row = (
@@ -323,6 +394,7 @@ def render_session_table(data):
                 print(row)
                 global_idx += 1
 
+            # 第二级：日小计
             day_short = day["date"][5:] if len(day["date"]) >= 10 else day["date"]
             day_time_label = f"{day_short}({day['weekday']}) 小计"
             day_subtotal_row = (
@@ -339,6 +411,7 @@ def render_session_table(data):
             print(day_subtotal_row)
             print("·" * total_table_width)
 
+        # 第三级：周小计
         week_subtotal_row = (
             pad_str("周计", w_rank, "center") + " │ " +
             pad_str(f"{week['weekKey']} 小计", w_time, "center") + " │ " +
@@ -353,6 +426,7 @@ def render_session_table(data):
         print(week_subtotal_row)
         print("─" * total_table_width)
 
+    # 第四级：全周期合计
     grand_total_row = (
         pad_str("汇总", w_rank, "center") + " │ " +
         pad_str("全周期合计", w_time, "center") + " │ " +
@@ -368,6 +442,7 @@ def render_session_table(data):
     print("=" * total_table_width)
 
 def print_usage_hint():
+    """打印 CLI 使用帮助信息"""
     print("=" * 78)
     print("  myccusage: 多 Agent 会话用量与 DeepSeek-V4.1-Flash 等效计费工具")
     print("=" * 78)
@@ -405,13 +480,19 @@ def print_usage_hint():
     print("=" * 78)
 
 def main(raw_args=None):
+    """
+    命令行参数解析与调度入口。
+    根据参数决定执行 CLI 表格渲染还是启动 Web 仪表盘服务。
+    """
     if raw_args is None:
         raw_args = sys.argv[1:]
 
+    # 如果存在帮助标记，直接输出用法信息并退出
     if "-h" in raw_args or "--help" in raw_args:
         print_usage_hint()
         return
 
+    # 初始化配置变量
     agent_type = None
     mode = "daily"  # 默认 -d 每日会话账本模式
     sort_by_tokens = False
@@ -419,17 +500,21 @@ def main(raw_args=None):
     web_port = 8488
     clean_args = []
 
+    # 手动解析命令行参数（避免依赖外部库的复杂逻辑，支持灵活标志位置）
     i = 0
     while i < len(raw_args):
         a = raw_args[i]
+        # 解析 Web 模式标记
         if a in ("--web", "-w", "web"):
             is_web_mode = True
+        # 解析自定义端口标记
         elif a in ("--port", "-p") and i + 1 < len(raw_args):
             i += 1
             try:
                 web_port = int(raw_args[i])
             except ValueError:
                 pass
+        # 解析 Agent 类型匹配标记
         elif a in ("--agy", "--antigravity"):
             agent_type = "agy"
         elif a == "--claude":
@@ -446,26 +531,32 @@ def main(raw_args=None):
             agent_type = "opencode"
         elif a == "--workbuddy":
             agent_type = "workbuddy"
+        # 解析统计视图模式标记（Session总览或每日账本）
         elif a in ("-s", "--session"):
             mode = "session"
         elif a in ("-d", "--daily"):
             mode = "daily"
+        # 解析排序偏好标记（是否按 Token 排列）
         elif a in ("--tokens", "-t"):
             sort_by_tokens = True
         else:
+            # 收集未被识别的参数，可能传递给底层方法作透传用途
             clean_args.append(a)
         i += 1
 
+    # 如果激活了 Web 模式，将调度到服务端代码
     if is_web_mode:
         from .web.server import start_server
         start_server(port=web_port, default_agent=agent_type or "agy")
         return
 
+    # CLI 模式下要求至少指定一个有效的目标 Agent
     if not agent_type:
         print_usage_hint()
         return
 
     try:
+        # 基于模式选择对应的数据拉取和表格渲染逻辑
         if mode == "session":
             data = get_session_data(agent_type, sort_by_tokens=sort_by_tokens, clean_args=clean_args)
             render_session_table(data)
@@ -474,6 +565,7 @@ def main(raw_args=None):
             render_daily_table(data)
     except Exception as e:
         msg = str(e)
+        # 对依赖缺失做出友好提醒
         if "未检测到底层依赖" in msg:
             print(f"\n{msg}\n", file=sys.stderr)
         else:

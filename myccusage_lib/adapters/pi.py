@@ -13,18 +13,22 @@ from datetime import datetime, timezone
 from .base import BaseAgentAdapter
 
 class PiAdapter(BaseAgentAdapter):
+    """Pi Agent 适配器，解析本地 jsonl 日志以提取信息"""
     agent_id = "pi"
     display_name = "Pi Agent"
     has_times = False
 
     def __init__(self):
+        """初始化 Pi 会话目录"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.pi/agent/sessions")
 
     def is_available(self) -> bool:
+        """检查基础目录是否存在"""
         return os.path.exists(self.base_dir)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """扫描各会话日志文件以提取用户请求作为标题"""
         titles = {}
         times = {}
         if not self.is_available():
@@ -57,6 +61,10 @@ class PiAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        提取 Pi Agent 的会话数据。
+        采用文件 mtime/size 增量缓存策略。
+        """
         if not self.is_available():
             return {}, []
 
@@ -74,6 +82,7 @@ class PiAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+                # 使用 mtime 和 size 进行文件级防抖，提高加载性能
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
                 else:
@@ -112,10 +121,11 @@ class PiAdapter(BaseAgentAdapter):
                                     records.append((sid, date_str, iso_str, inp, cr, out, tot))
                     except Exception:
                         pass
+                    # 将解析得到的结果存入缓存，下次无修改直接命中
                     self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, inp, cr, out, tot in records:
-                    # 每日切片
+                    # 每日切片数据聚合
                     if date_str not in daily_map:
                         daily_map[date_str] = {}
                     if sid not in daily_map[date_str]:
@@ -136,7 +146,7 @@ class PiAdapter(BaseAgentAdapter):
                     if iso_str > ds["lastActivity"]:
                         ds["lastActivity"] = iso_str
 
-                    # 项目生命周期汇总
+                    # 项目生命周期汇总 (全生命周期累加计算)
                     if sid not in session_map:
                         session_map[sid] = {
                             "sessionId": sid,

@@ -14,19 +14,23 @@ import sqlite3
 from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str
 
 class WorkBuddyAdapter(BaseAgentAdapter):
+    """WorkBuddy 适配器，结合 SQLite 的元数据与 JSONL 日志文件的用量数据进行分析"""
     agent_id = "workbuddy"
     display_name = "WorkBuddy"
     has_times = True
 
     def __init__(self):
+        """初始化 WorkBuddy 基础配置路径"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.workbuddy")
         self.db_path = os.path.join(self.base_dir, "workbuddy.db")
 
     def is_available(self) -> bool:
+        """检查 WorkBuddy 目录是否存在"""
         return os.path.exists(self.base_dir)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 SQLite 数据库或通过回退策略扫描日志提取对话的标题及时间戳"""
         titles = {}
         times = {}
         if os.path.exists(self.db_path):
@@ -34,6 +38,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                 uri = f"file:{self.db_path}?mode=ro"
                 conn = sqlite3.connect(uri, uri=True, timeout=3.0)
                 cur = conn.cursor()
+                # 从 sessions 表中直接读取标题与时间戳信息
                 for row in cur.execute("SELECT id, title, custom_title, created_at, updated_at, last_activity_at FROM sessions"):
                     sid, t, ct, ca, ua, la = row
                     title = ct or t
@@ -77,6 +82,10 @@ class WorkBuddyAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        解析 WorkBuddy 的 jsonl 文件提取消耗数据。
+        支持特殊数据格式，如 rawUsage vs usage 的平滑兼容。
+        """
         if not self.is_available():
             return {}, []
 
@@ -105,6 +114,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+                # 使用 mtime 和 size 的防抖缓存，避免每次全量解析所有 jsonl
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
                 else:
@@ -131,6 +141,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                 date_str = ms_to_date_str(ts)
                                 iso_str = ms_to_iso(ts)
 
+                                # 兼容 rawUsage 与 usage 两种特殊数据格式
                                 if ru:
                                     hit = ru.get("prompt_cache_hit_tokens", 0)
                                     miss = ru.get("prompt_cache_miss_tokens", 0)
@@ -149,10 +160,11 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                 records.append((sid, date_str, iso_str, miss, hit, out, tot))
                     except Exception:
                         pass
+                    # 将解析完成的会话轮次记入防抖缓存
                     self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, miss, hit, out, tot in records:
-                    # 每日切片
+                    # 每日切片数据聚合
                     if date_str not in daily_map:
                         daily_map[date_str] = {}
                     if sid not in daily_map[date_str]:
@@ -173,7 +185,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                     if iso_str > ds["lastActivity"]:
                         ds["lastActivity"] = iso_str
 
-                    # 全生命周期会话
+                    # 项目生命周期汇总 (全生命周期累加计算)
                     if sid not in session_map:
                         session_map[sid] = {
                             "sessionId": sid,

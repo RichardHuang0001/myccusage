@@ -20,24 +20,31 @@ from datetime import datetime, timezone
 from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
 
 class AntigravityAdapter(BaseAgentAdapter):
+    """Google Antigravity 的适配器，实现数据源的检测、解析和数据聚合"""
     agent_id = "agy"
     display_name = "Google Antigravity"
     has_times = False
 
     def __init__(self):
+        """初始化基础目录和缓存目录路径"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.gemini/antigravity")
         self.cache_dir = os.path.expanduser("~/.cache/myccusage")
 
     def is_available(self) -> bool:
+        """检测本地 Antigravity 目录或缓存文件是否存在"""
         return os.path.exists(self.base_dir) or os.path.exists(os.path.join(self.cache_dir, "agy_daily.json"))
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """
+        解析 pb 文件和 jsonl 日志，提取对话标题。
+        """
         titles = {}
         times = {}
         if not self.is_available():
             return titles, times
 
+        # 提取 pb 文件中的标题
         proto_path = os.path.join(self.base_dir, "agyhub_summaries_proto.pb")
         if os.path.exists(proto_path):
             try:
@@ -69,6 +76,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             except Exception:
                 pass
 
+        # 提取 transcript 日志中的请求标题
         logs_glob = os.path.join(self.base_dir, "brain/*/.system_generated/logs/transcript.jsonl")
         for log_path in glob.glob(logs_glob):
             parts = log_path.split(os.sep)
@@ -100,6 +108,9 @@ class AntigravityAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        抓取并解析会话消费数据。采用双轨制防抖与缓存机制，保证查询速度。
+        """
         if not self.is_available():
             return {}, []
 
@@ -115,6 +126,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                     return c_val
 
         # 方案 A: 若有 ccusage 命令，调用 ccusage antigravity 抓取并同步缓存
+        # 这种方式速度快，并会自动生成最新切片的缓存
         if has_ccusage:
             try:
                 res = subprocess.run(["ccusage", "antigravity", "session", "--json", "--offline"],
@@ -144,10 +156,12 @@ class AntigravityAdapter(BaseAgentAdapter):
                             "totalTokens": tot,
                             "lastActivity": last_act
                         }
+                        # 每日切片数据聚合
                         if date_str not in daily_map:
                             daily_map[date_str] = []
                         daily_map[date_str].append(rec)
 
+                        # 全生命周期汇总
                         session_list.append({
                             "sessionId": sid,
                             "inputTokens": inp,
@@ -173,6 +187,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                 pass
 
         # 方案 B: 若 ccusage 不可用或调用失败，读取本地 agy_daily.json 缓存
+        # 降级方案，只读取缓存的聚合数据
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:

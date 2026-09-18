@@ -14,19 +14,23 @@ from datetime import datetime, timezone
 from .base import BaseAgentAdapter
 
 class ClaudeAdapter(BaseAgentAdapter):
+    """Claude Code 适配器，处理本地历史日志文件"""
     agent_id = "claude"
     display_name = "Claude Code"
     has_times = False
 
     def __init__(self):
+        """初始化 Claude 配置目录路径"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.claude")
         self.projects_dir = os.path.join(self.base_dir, "projects")
 
     def is_available(self) -> bool:
+        """检查目录是否存在以确定可用性"""
         return os.path.exists(self.base_dir)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 history.jsonl 与各个项目的日志中提取对话标题与时间戳"""
         titles = {}
         times = {}
         if not self.is_available():
@@ -76,6 +80,9 @@ class ClaudeAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        提取 Claude 消耗数据，使用文件 mtime/size 进行防抖缓存，避免重复读取大文件。
+        """
         if not self.is_available():
             return {}, []
 
@@ -93,6 +100,7 @@ class ClaudeAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+                # mtime/size 防抖缓存的工作原理：对比文件的修改时间与大小，如果没有变化直接使用缓存
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
                 else:
@@ -136,16 +144,18 @@ class ClaudeAdapter(BaseAgentAdapter):
                                     continue
 
                                 key = mid if mid else f"line_{idx}"
-                                # 保留最新的那一次上报（通常包含完整的 thinking + output_tokens）
+                                # 根据 message.id 幂等去重
+                                # 保留最新的那一次上报（通常包含完整的 thinking + output_tokens），避免重复计算
                                 seen_msg_ids[key] = (sid, date_str, iso_str, inp + cw, cr, out, tot)
 
                         records = list(seen_msg_ids.values())
                     except Exception:
                         pass
+                    # 更新文件级解析结果缓存
                     self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, inp, cr, out, tot in records:
-                    # 每日切片
+                    # 每日切片数据聚合
                     if date_str not in daily_map:
                         daily_map[date_str] = {}
                     if sid not in daily_map[date_str]:
@@ -166,7 +176,7 @@ class ClaudeAdapter(BaseAgentAdapter):
                     if iso_str > ds["lastActivity"]:
                         ds["lastActivity"] = iso_str
 
-                    # 项目生命周期汇总
+                    # 项目生命周期汇总 (全生命周期累加计算)
                     if sid not in session_map:
                         session_map[sid] = {
                             "sessionId": sid,

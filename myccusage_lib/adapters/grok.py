@@ -14,24 +14,29 @@ import sqlite3
 from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
 
 class GrokAdapter(BaseAgentAdapter):
+    """Grok 适配器，支持 SQLite 及本地日志文件的解析与防抖缓存"""
     agent_id = "grok"
     display_name = "Grok"
     has_times = False
 
     def __init__(self):
+        """初始化 Grok 配置和会话目录"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.grok")
         self.sessions_dir = os.path.join(self.base_dir, "sessions")
 
     def is_available(self) -> bool:
+        """检查 grok 配置目录是否存在"""
         return os.path.exists(self.base_dir)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 SQLite 及 jsonl 中提取标题数据"""
         titles = {}
         times = {}
         if not self.is_available():
             return titles, times
 
+        # 从 SQLite 数据库读取
         db_path = os.path.join(self.sessions_dir, "session_search.sqlite")
         if os.path.exists(db_path):
             try:
@@ -46,6 +51,7 @@ class GrokAdapter(BaseAgentAdapter):
             except Exception:
                 pass
 
+        # 从 summary 日志读取
         for summary_path in glob.glob(os.path.join(self.sessions_dir, "**/summary.json"), recursive=True):
             try:
                 with open(summary_path, "r", encoding="utf-8") as f:
@@ -57,6 +63,7 @@ class GrokAdapter(BaseAgentAdapter):
             except Exception:
                 pass
 
+        # 从 prompt 历史日志读取
         for ph in glob.glob(os.path.join(self.sessions_dir, "*/prompt_history.jsonl")):
             try:
                 with open(ph, "r", encoding="utf-8") as f:
@@ -75,6 +82,10 @@ class GrokAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        提取 Grok 的会话数据，通过分析 updates.jsonl 中的 turn_completed 获取每轮消耗。
+        使用文件级 mtime/size 防抖缓存。
+        """
         if not self.is_available():
             return {}, []
 
@@ -92,6 +103,7 @@ class GrokAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+                # 使用防抖缓存策略
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
                 else:
@@ -122,10 +134,11 @@ class GrokAdapter(BaseAgentAdapter):
                                 records.append((sid, date_str, iso_str, inp, c_read, out, tot))
                     except Exception:
                         pass
+                    # 更新文件防抖缓存
                     self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, inp, cr, out, tot in records:
-                    # 每日切片
+                    # 每日切片数据聚合
                     if date_str not in daily_map:
                         daily_map[date_str] = {}
                     if sid not in daily_map[date_str]:
@@ -146,7 +159,7 @@ class GrokAdapter(BaseAgentAdapter):
                     if iso_str > ds["lastActivity"]:
                         ds["lastActivity"] = iso_str
 
-                    # 项目生命周期汇总
+                    # 项目生命周期汇总 (全生命周期累加计算)
                     if sid not in session_map:
                         session_map[sid] = {
                             "sessionId": sid,

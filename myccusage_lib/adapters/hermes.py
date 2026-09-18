@@ -12,25 +12,30 @@ import sqlite3
 from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
 
 class HermesAdapter(BaseAgentAdapter):
+    """Hermes Agent 适配器，通过直连 SQLite 数据库进行高速查询"""
     agent_id = "hermes"
     display_name = "Hermes Agent"
     has_times = True
 
     def __init__(self):
+        """初始化数据库连接路径"""
         super().__init__()
         self.base_dir = os.path.expanduser("~/.hermes")
         self.db_path = os.path.join(self.base_dir, "state.db")
 
     def is_available(self) -> bool:
+        """检查 state.db 数据库文件是否存在"""
         return os.path.exists(self.db_path)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 sessions 表提取所有会话的标题和时间"""
         titles = {}
         times = {}
         if not self.is_available():
             return titles, times
         try:
             uri = f"file:{self.db_path}?mode=ro"
+            # 开启只读连接模式，避免锁定数据库
             conn = sqlite3.connect(uri, uri=True, timeout=3.0)
             c = conn.cursor()
             for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
@@ -46,6 +51,9 @@ class HermesAdapter(BaseAgentAdapter):
         return titles, times
 
     def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        查询 Hermes 数据库提取统计数据，按时间正序返回每日切片和汇总。
+        """
         if not self.is_available():
             return {}, []
 
@@ -79,7 +87,7 @@ class HermesAdapter(BaseAgentAdapter):
                 iso_str = ts_to_iso(act_time) if act_time else ""
                 tot = inp + cr + out
 
-                # 每日切片记录
+                # 每日切片记录 (按天聚合)
                 if date_str not in daily_map:
                     daily_map[date_str] = []
                 daily_map[date_str].append({
