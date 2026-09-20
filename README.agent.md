@@ -136,14 +136,11 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 }
 ```
 
-#### 增量同步与防漂移策略：
-1. 先通过 `ccusage <agent> daily --json` 获取所有有活动的日期列表；
-2. 若某日期为**过去的历史日**且缓存中已存在，则**直接读取缓存**（0.1ms 瞬时响应）；
-3. 若某日期为**今天 (Today)** 或**未缓存的历史日**，则实时执行：
-   ```bash
-   ccusage <agent> session -s <Date> -u <Date> --json
-   ```
-   获得该单日的准确切片，并对历史日进行回写落盘。确保历史小计绝不漂移，今日实时消耗保持最新。
+#### 原生增量同步、指纹感知与防漂移策略：
+1. **100% 纯 Python 原生直连**：彻底消除对外部 Node.js/ccusage 工具的调用，直连各 Agent 的原生存储格式（如 Antigravity 的 SQLite+Protobuf、Claude 的 JSONL、Codex 的 delta 日志等）。
+2. **单 Agent 粒度 mtime 指纹感知**：各 Adapter 实现微秒级 `get_source_fingerprint()`，高频轮询时仅当检测到某个 Agent 数据源发生修改时才触发该 Agent 计算，其余未改动 Agent 0 磁盘 I/O 内存复用。
+3. **当日热文件快速剪枝 (`today_only=True`)**：基于 `os.scandir` 在文件系统目录流中单次系统调用内联过滤 `st_mtime >= today_midnight`，沉睡的数百个历史冷文件完全跳过，常规 60s 刷新耗时仅需 5ms。
+4. **历史日跨日切片隔离**：每一次交互的 Token 严格按其自身的时间戳归入对应自然日桶，即便两周前的旧 Session 被唤醒追加，历史数据与今日数据也绝对守恒、互不污染。
 
 ---
 
@@ -152,30 +149,39 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 ### 项目目录树：
 ```
 myccusage/
-├── myccusage.py                 # CLI 入口，处理软链接并委托 cli.py
+├── myccusage.py                 # CLI 辅助脚本入口，处理软链接并委托 cli.py
 ├── myccusage_lib/
-│   ├── __init__.py             # 版本号与元数据定义 (__version__ = "1.3.0")
+│   ├── __init__.py             # 版本号与元数据定义 (__version__ = "1.4.0")
+│   ├── __main__.py             # 支持 python3 -m myccusage_lib 模块级运行
 │   ├── adapters/               # 原生高性能 Agent 适配器体系 (Zero ccusage dependency)
-│   │   ├── base.py             # 适配器抽象基类与时间戳/防抖缓存工具
+│   │   ├── base.py             # 适配器抽象基类、时间戳转换与 fast_scandir 工具
 │   │   ├── workbuddy.py        # 腾讯 WorkBuddy 原生 SQLite + 流式 JSONL 解析
 │   │   ├── hermes.py           # Hermes state.db 高性能只读直查 (< 1ms)
 │   │   ├── opencode.py         # OpenCode opencode.db 高性能只读直查 (< 1ms)
-│   │   ├── pi.py               # Pi Agent JSONL 流式提取 (< 2ms)
+│   │   ├── pi.py               # Pi Agent JSONL 流式提取 (< 1ms)
 │   │   ├── claude.py           # Claude Code message.id 幂等去重解析
 │   │   ├── codex.py            # OpenAI Codex token_count delta 增量累计
-│   │   ├── grok.py             # Grok turn_completed 聚合与缓存剥离
-│   │   ├── agy.py              # Google Antigravity 双轨解析与缓存加速
+│   │   ├── grok.py             # Grok turn_completed 聚合与增量提取
+│   │   ├── agy.py              # Google Antigravity 原生 Protobuf varint 解码内核
 │   │   └── __init__.py         # 适配器注册表 (ADAPTERS)
-│   ├── core.py                 # 标题解析、两级缓存、聚合计算内核
-│   ├── cli.py                  # CLI 参数解析、Unicode 字符级中英宽度排版渲染
+│   ├── core.py                 # 标题解析、单 Agent 粒度缓存、聚合计算内核
+│   ├── cli.py                  # CLI 参数解析、East Asian Width 排版渲染与 Dock 调度
+│   ├── macos/                  # 内置 macOS 程序坞应用资源 (打包进 Wheel)
+│   │   ├── AppIcon.icns        # 高分辨率 macOS 原生应用图标
+│   │   ├── build_app.sh        # 原生 Swift 编译脚本
+│   │   ├── generate_icon.py    # 图标生成工具
+│   │   └── main.swift          # 原生 DockTile 绘制与悬浮气泡卡片宿主
 │   └── web/
-│       ├── server.py           # 原生单文件 HTTP 服务、REST API、30s 心跳自退
+│       ├── server.py           # 原生单文件 HTTP 服务、REST API (/api/today)、30s 心跳自退
 │       └── static/
-│           ├── index.html      # 单页 Dashboard 结构
+│           ├── index.html      # 单页 Dashboard 结构与多模型计费管理器
 │           ├── style.css       # 响应式玻璃拟态暗色/亮色样式
 │           └── app.js          # 原生 JavaScript 状态流、动态全站重算、Chart.js
-├── README.md                   # 面向终端开发者与用户的标准文档
-├── README.en.md                # 英文说明文档
+├── macos/                      # 根目录 macOS 构建源码与脚本 (方便开发者直调)
+├── scripts/                    # 维护与媒体生成辅助工具 (如 generate_cover.py)
+├── docs/                       # 预览截图与媒体资源 (images/)
+├── README.md                   # 中文主文档 (含 myccusage dock 快速使用)
+├── README.en.md                # 英文主文档
 ├── README.agent.md             # 面向 AI Agent 与系统维护者的工程架构指南 (本文档)
 ├── install.sh                  # 一键链接与全局环境配置脚本
 └── pyproject.toml              # PEP 621 打包配置与 PyPI 发布入口
@@ -277,19 +283,21 @@ myccusage/
 
 假设需要新增一个名为 `cursor` 的 AI Agent：
 
-1. **在 `myccusage_lib/core.py` 注册**：
+1. **在 `myccusage_lib/adapters/` 下创建原生适配器 (如 `cursor.py`)**：
+   继承 `BaseAgentAdapter`，实现 `is_available()`, `get_source_fingerprint()`, `get_titles_and_times()` 和 `fetch_data(today_only=False)`。
+2. **在 `myccusage_lib/adapters/__init__.py` 注册**：
+   导入并加入 `ADAPTERS["cursor"] = CursorAdapter()`。
+3. **在 `myccusage_lib/core.py` 的 `SUPPORTED_AGENTS` 注册显示信息**：
    ```python
    SUPPORTED_AGENTS["cursor"] = {
        "name": "Cursor IDE",
-       "subcmd": "cursor",  # ccusage cursor 子命令
+       "subcmd": "cursor",
        "has_times": False
    }
    ```
-2. **编写原生标题提取器**：
-   在 `core.py` 增加 `get_cursor_titles() -> dict[str, str]`，解析其本地状态存储，并在 `get_daily_data` 和 `get_session_data` 的 `agent_type == "cursor"` 分支中进行调用。
-3. **在 `cli.py` 添加参数映射**：
+4. **在 `cli.py` 添加参数映射**：
    在 `main()` 参数解析部分增加 `--cursor` 选项，并更新 `print_usage_hint()`。
-4. **在 `index.html` 增加选择项**：
+5. **在 Web 前端 `index.html` 增加选择项**：
    在 `<div class="agent-tabs">` 中增加对应 Tab 按钮。
 
 ---

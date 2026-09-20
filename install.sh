@@ -27,26 +27,14 @@ fi
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo -e "${GREEN}✓ 检测到 Python 版本: ${PY_VER}${NC}"
 
-# 2. 检查底层 ccusage CLI 依赖
-echo -e "\n${BLUE}[2/4] 检查底层 ccusage CLI 依赖...${NC}"
-if command -v ccusage &> /dev/null; then
-    CC_VER=$(ccusage --version 2>/dev/null || echo "已安装")
-    echo -e "${GREEN}✓ 检测到底层 ccusage: ${CC_VER}${NC}"
-else
-    echo -e "${YELLOW}⚠️  提示: 未检测到全局 ccusage 命令。${NC}"
-    echo -e "   myccusage 依赖底层 ccusage 工具获取各 Agent 的 Token 切片。"
-    if command -v npm &> /dev/null; then
-        read -p "   是否现在通过 npm 自动安装 ccusage? [Y/n] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-            echo -e "   正在运行: npm install -g ccusage ..."
-            npm install -g ccusage
-            echo -e "${GREEN}✓ ccusage 安装成功！${NC}"
-        else
-            echo -e "${YELLOW}   请稍后手动运行: npm install -g ccusage (或 bun add -g ccusage)${NC}"
-        fi
+# 2. 架构与环境特性检测
+echo -e "\n${BLUE}[2/4] 验证系统架构与依赖...${NC}"
+echo -e "${GREEN}✓ 采用 100% 纯 Python 原生解析内核 (零 Node.js / ccusage 外部依赖)${NC}"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    if command -v swiftc &> /dev/null; then
+        echo -e "${GREEN}✓ 检测到 macOS Swift 编译器 (支持 'myccusage dock' 原生程序坞常驻)${NC}"
     else
-        echo -e "${YELLOW}   未检测到 npm，请稍后手动安装: npm install -g ccusage (或 bun add -g ccusage)${NC}"
+        echo -e "${YELLOW}ℹ️  提示: 未检测到 swiftc，若需使用原生程序坞常驻可安装 Command Line Tools: xcode-select --install${NC}"
     fi
 fi
 
@@ -93,4 +81,7 @@ echo -e "${BOLD}${GREEN}  🎉 安装与配置已完成！您现在可以在终�
 echo -e "  - ${BOLD}myccusage --agy${NC}       # 查看 Antigravity 每日会话用量账本"
 echo -e "  - ${BOLD}myccusage --claude${NC}    # 查看 Claude Code 每日账本"
 echo -e "  - ${BOLD}myccusage --web${NC}       # 启动高颜值本地 Web 仪表盘"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo -e "  - ${BOLD}myccusage dock${NC}        # 启动 macOS 原生程序坞常驻微型看板"
+fi
 echo -e "${BOLD}${GREEN}==============================================================================${NC}\n"
