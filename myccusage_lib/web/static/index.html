@@ -204,9 +204,31 @@
               <span class="legend-dot dot-cache"></span><span>Cache 命中 (¥0.04/M)</span>
             </div>
           </div>
-          <div class="chart-body">
-            <canvas id="trendChartCanvas"></canvas>
-            <div id="trendChartFallback" class="chart-fallback" style="display: none;"></div>
+          <div class="chart-body trend-chart-body">
+            <!-- 固定左侧 Token Y 轴刻度 -->
+            <div class="trend-y-axis trend-y-axis-left" id="trendYAxisLeft"></div>
+
+            <!-- 小组件内部的横移主视口 -->
+            <div class="trend-scroll-viewport" id="trendScrollViewport">
+              <div class="trend-scroll-canvas-wrap" id="trendScrollCanvasWrap">
+                <canvas id="trendChartCanvas"></canvas>
+              </div>
+              <div id="trendChartFallback" class="chart-fallback" style="display: none;"></div>
+            </div>
+
+            <!-- 固定右侧等效费用 CNY ¥ Y 轴刻度 -->
+            <div class="trend-y-axis trend-y-axis-right" id="trendYAxisRight"></div>
+          </div>
+
+          <!-- 小组件内部的横移控制条 -->
+          <div class="trend-scroll-bar-wrap" id="trendScrollBarWrap" style="display: none;">
+            <div class="trend-scroll-hint">
+              <span class="hint-icon">↔️</span>
+              <span id="trendScrollHintText">默认展示近 30 天 · 可左右横滑查看历史数据</span>
+            </div>
+            <button class="btn-snap-latest" id="btnSnapLatest" type="button" title="一键定位至最近 30 天" style="display: none;">
+              <span>⏩ 回到近 30 天</span>
+            </button>
           </div>
         </div>
 
@@ -267,7 +289,7 @@
     <!-- 底部状态栏 -->
     <footer class="footer">
       <div class="footer-left">
-        <span>myccusage v1.4.0</span>
+        <span>myccusage v1.5.0</span>
         <span class="divider">|</span>
         <span>本地缓存源: <code>~/.cache/myccusage/</code></span>
       </div>

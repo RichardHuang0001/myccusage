@@ -267,8 +267,15 @@
     ledgerContainer: document.getElementById('ledgerContainer'),
     toast: document.getElementById('toast'),
 
-    // Canvas
+    // Canvas 与内部横滑图表
     trendChartCanvas: document.getElementById('trendChartCanvas'),
+    trendYAxisLeft: document.getElementById('trendYAxisLeft'),
+    trendYAxisRight: document.getElementById('trendYAxisRight'),
+    trendScrollViewport: document.getElementById('trendScrollViewport'),
+    trendScrollCanvasWrap: document.getElementById('trendScrollCanvasWrap'),
+    trendScrollBarWrap: document.getElementById('trendScrollBarWrap'),
+    trendScrollHintText: document.getElementById('trendScrollHintText'),
+    btnSnapLatest: document.getElementById('btnSnapLatest'),
     donutChartCanvas: document.getElementById('donutChartCanvas'),
     donutStats: document.getElementById('donutStats'),
     trendChartTitle: document.getElementById('trendChartTitle'),
@@ -1213,6 +1220,74 @@
       days.forEach(d => d.classList.toggle('collapsed', !isExpand));
       el.btnToggleAllAccordion.textContent = isExpand ? '收起全部' : '展开全部';
     });
+
+    // 趋势图小组件快速定位回到最近 30 天
+    if (el.btnSnapLatest) {
+      el.btnSnapLatest.addEventListener('click', () => {
+        if (el.trendScrollViewport) {
+          const maxScroll = el.trendScrollViewport.scrollWidth - el.trendScrollViewport.clientWidth;
+          el.trendScrollViewport.scrollTo({ left: maxScroll, behavior: 'smooth' });
+        }
+      });
+    }
+
+    // 趋势图小组件内部横滑滚动与拖拽监听
+    if (el.trendScrollViewport) {
+      el.trendScrollViewport.addEventListener('scroll', () => {
+        const maxScroll = el.trendScrollViewport.scrollWidth - el.trendScrollViewport.clientWidth;
+        const isNearEnd = (maxScroll - el.trendScrollViewport.scrollLeft) < 35;
+        if (el.btnSnapLatest) {
+          el.btnSnapLatest.style.display = isNearEnd ? 'none' : 'inline-flex';
+        }
+        if (el.trendScrollHintText && maxScroll > 0) {
+          if (isNearEnd) {
+            el.trendScrollHintText.textContent = `📅 默认展示近 30 天 · 可向左横滑查看更早历史`;
+          } else {
+            el.trendScrollHintText.textContent = `⏳ 历史数据查看中 · 可点击右侧快速返回`;
+          }
+        }
+      });
+
+      // 鼠标按住拖拽滑动 (Drag to scroll)
+      let isMouseDown = false;
+      let startMouseX = 0;
+      let startScrollLeft = 0;
+
+      el.trendScrollViewport.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isMouseDown = true;
+        el.trendScrollViewport.classList.add('grabbing');
+        startMouseX = e.pageX - el.trendScrollViewport.offsetLeft;
+        startScrollLeft = el.trendScrollViewport.scrollLeft;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isMouseDown) {
+          isMouseDown = false;
+          if (el.trendScrollViewport) el.trendScrollViewport.classList.remove('grabbing');
+        }
+      });
+
+      el.trendScrollViewport.addEventListener('mousemove', (e) => {
+        if (!isMouseDown) return;
+        e.preventDefault();
+        const currentX = e.pageX - el.trendScrollViewport.offsetLeft;
+        const walk = (currentX - startMouseX) * 1.5;
+        el.trendScrollViewport.scrollLeft = startScrollLeft - walk;
+      });
+    }
+
+    // 窗口尺寸变化自适应重绘
+    window.addEventListener('resize', () => {
+      clearTimeout(window._trendResizeTimer);
+      window._trendResizeTimer = setTimeout(() => {
+        if (state.agent === 'all' && state.allAgentsData) {
+          renderCharts(state.allAgentsData);
+        } else if (state.data) {
+          renderCharts(state.data);
+        }
+      }, 150);
+    });
   }
 
   function setTheme(isDark) {
@@ -1472,6 +1547,37 @@
     if (el.val14DaysAvgCost) el.val14DaysAvgCost.innerHTML = formatInlineCost(model, avgCost14);
   }
 
+  // 左右两侧固定 Y 轴刻度动态对齐绘制
+  function renderTrendYAxisOverlays(chartInstance) {
+    const chart = chartInstance || state.trendChartInstance;
+    if (!chart || !chart.scales) return;
+    const yScale = chart.scales.y;
+    const yCostScale = chart.scales.yCost;
+    if (!yScale || !yCostScale) return;
+
+    if (el.trendYAxisLeft && Array.isArray(yScale.ticks)) {
+      let leftHtml = '';
+      yScale.ticks.forEach(t => {
+        const px = yScale.getPixelForValue(t.value);
+        if (typeof px === 'number' && !isNaN(px)) {
+          leftHtml += `<span class="y-axis-label y-axis-label-left" style="top:${px}px;">${formatTokens(t.value)}</span>`;
+        }
+      });
+      el.trendYAxisLeft.innerHTML = leftHtml;
+    }
+
+    if (el.trendYAxisRight && Array.isArray(yCostScale.ticks)) {
+      let rightHtml = '';
+      yCostScale.ticks.forEach(t => {
+        const px = yCostScale.getPixelForValue(t.value);
+        if (typeof px === 'number' && !isNaN(px)) {
+          rightHtml += `<span class="y-axis-label y-axis-label-right" style="top:${px}px;">¥${t.value}</span>`;
+        }
+      });
+      el.trendYAxisRight.innerHTML = rightHtml;
+    }
+  }
+
   // 2. 图表渲染 (动态联动选中模型费率，金额轴默认使用人民币 CNY ¥)
   function renderCharts(data) {
     if (typeof Chart === 'undefined') {
@@ -1487,10 +1593,12 @@
 
     if (state.trendChartInstance) {
       state.trendChartInstance.destroy();
+      state.trendChartInstance = null;
     }
 
     const model = getActiveModel();
     const trend = data.dailyTrend || [];
+    const totalDays = trend.length;
     const labels = trend.map(t => t.date.slice(5) + `(${t.weekday})`);
     const outputTokens = trend.map(t => t.outputTokens);
     const inputTokens = trend.map(t => t.inputTokens);
@@ -1506,8 +1614,44 @@
           ? `${data.displayName} 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
           : `${data.displayName} 会话活跃分布与费用统计 (CNY ¥)`);
 
+    // 默认展示近 30 天：根据天数动态计算可滑动画布宽度 (仅小组件内部延展)
+    const viewportWidth = (el.trendScrollViewport && el.trendScrollViewport.clientWidth > 0)
+      ? el.trendScrollViewport.clientWidth
+      : 600;
+
+    if (totalDays > 30) {
+      // 保持一屏舒适呈现约 30 天的柱状间距，超出天数横向延展
+      const dayWidth = Math.max(28, Math.floor(viewportWidth / 30));
+      const totalWidth = Math.round(totalDays * dayWidth);
+      if (el.trendScrollCanvasWrap) {
+        el.trendScrollCanvasWrap.style.width = `${totalWidth}px`;
+      }
+      if (el.trendScrollBarWrap) {
+        el.trendScrollBarWrap.style.display = 'flex';
+      }
+      if (el.trendScrollHintText) {
+        el.trendScrollHintText.textContent = `📅 默认展示近 30 天 · 可向左横滑查看全部 ${totalDays} 天历史`;
+      }
+    } else {
+      if (el.trendScrollCanvasWrap) {
+        el.trendScrollCanvasWrap.style.width = '100%';
+      }
+      if (el.trendScrollBarWrap) {
+        el.trendScrollBarWrap.style.display = 'none';
+      }
+    }
+
+    // Chart.js 布局完成回调插件：自动同步固定刻度
+    const syncYAxisPlugin = {
+      id: 'syncYAxisOverlays',
+      afterLayout: (chart) => {
+        renderTrendYAxisOverlays(chart);
+      }
+    };
+
     state.trendChartInstance = new Chart(el.trendChartCanvas, {
       type: 'bar',
+      plugins: [syncYAxisPlugin],
       data: {
         labels: labels,
         datasets: [
@@ -1575,28 +1719,44 @@
         scales: {
           x: {
             grid: { display: false },
-            ticks: { color: textColor, font: { size: 10 } }
+            ticks: {
+              color: textColor,
+              font: { size: 10 }
+            }
           },
           y: {
             position: 'left',
             stacked: true,
             grid: { color: gridColor },
+            border: { display: false },
             ticks: {
-              color: textColor,
-              callback: val => formatTokens(val)
+              display: false // 隐藏内部画布刻度，固定于左侧固定列中展示
             }
           },
           yCost: {
             position: 'right',
             grid: { display: false },
+            border: { display: false },
             ticks: {
-              color: '#818cf8',
-              callback: val => `¥${val}`
+              display: false // 隐藏内部画布刻度，固定于右侧固定列中展示
             }
           }
         }
       }
     });
+
+    // 默认滑到最近 30 天的位置 (最右侧)
+    if (totalDays > 30 && el.trendScrollViewport) {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (el.trendScrollViewport) {
+            const maxScroll = el.trendScrollViewport.scrollWidth - el.trendScrollViewport.clientWidth;
+            el.trendScrollViewport.scrollLeft = maxScroll;
+            if (el.btnSnapLatest) el.btnSnapLatest.style.display = 'none';
+          }
+        }, 50);
+      });
+    }
 
     // 环形图 (Token 构成分析)
     if (state.donutChartInstance) {

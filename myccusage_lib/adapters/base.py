@@ -27,6 +27,42 @@ class BaseAgentAdapter:
         # 线程安全锁，保护缓存并发读写
         self._lock = threading.Lock()
 
+    def _load_persisted_file_cache(self):
+        """从本地磁盘快速加载文件级防抖缓存 (JSON 格式，< 10ms)"""
+        if not self.agent_id:
+            return
+        cache_path = os.path.expanduser(f"~/.cache/myccusage/{self.agent_id}_file_cache.json")
+        if os.path.exists(cache_path):
+            try:
+                import json
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._file_cache.update(data)
+            except Exception:
+                pass
+
+    def _save_persisted_file_cache(self):
+        """将文件级防抖缓存原子写入磁盘以供后续进程秒开"""
+        if not self.agent_id or not self._file_cache:
+            return
+        cache_dir = os.path.expanduser("~/.cache/myccusage")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"{self.agent_id}_file_cache.json")
+        tmp_path = cache_path + f".tmp.{os.getpid()}"
+        try:
+            import json
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self._file_cache, f)
+            os.replace(tmp_path, cache_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+
     def is_available(self) -> bool:
         """
         检测当前 Agent 本地数据源是否存在

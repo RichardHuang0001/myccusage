@@ -661,7 +661,7 @@ def fetch_single_day_sessions(ccusage_subcmd, date_str, times_override):
     except Exception:
         return None
 
-def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
+def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summary_only=False):
     """
     获取结构化的每日会话账本数据 (返回纯 dict/list，无终端控制台输出)
     
@@ -669,6 +669,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
     1. 优先使用原生 adapter 获取数据源，如果不可用则回退到 ccusage CLI 调用。
     2. 基于日期处理本地结果缓存（JSON 文件），未缓存历史日则进行增量刷新。
     3. 合并各日期的会话切片，汇总得出总体用量、成本统计和以周/日为单位的图表结构。
+    4. summary_only: 为 True 时仅计算宏观指标与日趋势，跳过单会话标题与明细构建 (全景看板提速 10x~20x)。
     """
     if agent_type not in SUPPORTED_AGENTS:
         raise ValueError(f"未知 Agent 类型: {agent_type}")
@@ -679,13 +680,17 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
 
     # 尝试加载高效率原生适配器
     adapter = ADAPTERS.get(agent_type)
-    if adapter:
+    if summary_only:
+        titles = {}
+        times_override = {}
+    elif adapter:
         titles, times_override = adapter.get_titles_and_times()
     else:
         titles, times_override = get_agent_metadata(agent_type)
 
     agent_lock = get_agent_lock(agent_type)
     with agent_lock:
+
         today_str = datetime.now().strftime("%Y-%m-%d")
 
         # 优先通过原生高性能适配器获取数据
@@ -709,70 +714,59 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             active_days.sort()
             daily_tokens_map = {d.get("date"): d.get("totalTokens", 0) for d in daily_list if d.get("date")}
 
-        # 2. 读取/写入本地缓存 (两级缓存设计：保障历史日查询极致速度)
-        cache_dir = os.path.expanduser("~/.cache/myccusage")
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, f"{agent_type}_daily.json")
-
-        cache = {}
-        if os.path.exists(cache_file) and not force_refresh:
-            try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    cache = json.load(f)
-            except Exception:
-                cache = {}
-
-        cache_dirty = False
         day_sessions_map = OrderedDict()
 
         if adapter:
+            # 原生适配器：直接使用由文件级 mtime 缓存精准保障的 native_daily_map
+            # 彻底杜绝旧按日缓存导致的会话唤醒迟滞或数据陈旧问题
             for d in active_days:
-                # 缓存命中：如果不是今天且在缓存中，且确保缓存数据不是异常的空列表
-                if not force_refresh and d != today_str and d in cache and not (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0):
-                    day_sessions_map[d] = cache[d]
-                else:
-                    # 缓存未命中：从原生数据源构建并更新缓存
-                    s_list = native_daily_map.get(d, [])
-                    for s in s_list:
-                        sid = s.get("sessionId")
-                        if not s.get("lastActivity") and sid in times_override:
-                            s["lastActivity"] = times_override[sid]
-                    day_sessions_map[d] = s_list
-                    if d != today_str:
-                        cache[d] = s_list
-                        cache_dirty = True
+                s_list = native_daily_map.get(d, [])
+                for s in s_list:
+                    sid = s.get("sessionId")
+                    if not s.get("lastActivity") and sid in times_override:
+                        s["lastActivity"] = times_override[sid]
+                day_sessions_map[d] = s_list
         else:
-            # 外部回退的数据处理：确定哪些历史日子不在缓存中
+            # 2. 外部回退模式：读取/写入本地日期缓存 (避免全量子进程开销)
+            cache_dir = os.path.expanduser("~/.cache/myccusage")
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_file = os.path.join(cache_dir, f"{agent_type}_daily.json")
+
+            cache = {}
+            if os.path.exists(cache_file) and not force_refresh:
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cache = json.load(f)
+                except Exception:
+                    cache = {}
+
+            cache_dirty = False
             uncached_history_days = [
                 d for d in active_days
                 if d != today_str and (d not in cache or (daily_tokens_map.get(d, 0) > 0 and len(cache.get(d, [])) == 0))
             ]
-            # 增量拉取缺失的旧日子并刷新本地缓存字典
             for d in uncached_history_days:
                 s_list = fetch_single_day_sessions(ccusage_subcmd, d, times_override)
                 if s_list is not None:
                     cache[d] = s_list
                     cache_dirty = True
 
-            # 合并缓存和当天新获取的数据
             for d_str in active_days:
                 if d_str != today_str:
                     day_sessions_map[d_str] = cache.get(d_str, [])
                 else:
-                    # 当日数据总是重新拉取以保证最新，不过若拉取失败也尝试回退用缓存
                     s_list = fetch_single_day_sessions(ccusage_subcmd, d_str, times_override)
                     if s_list is not None:
                         day_sessions_map[today_str] = s_list
                     else:
                         day_sessions_map[today_str] = cache.get(today_str, [])
 
-        if cache_dirty:
-            # 刷新磁盘级缓存文件
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(cache, f)
-            except Exception:
-                pass
+            if cache_dirty:
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(cache, f)
+                except Exception:
+                    pass
 
     # 3. 统计与分层聚合
     grand_total = 0
@@ -825,29 +819,31 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             ca = s.get("cacheReadTokens", 0)
             out = max(0, tot - (inp + ca))
             cost = calc_deepseek_cost(inp, ca, out)
-            sid = s.get("sessionId", "")
-            title = resolve_title(sid, titles)
-            time_display = format_time(s.get("lastActivity"))
-            if time_display == "--":
-                time_display = d_str[5:]
 
-            record = {
-                "index": global_idx,
-                "date": d_str,
-                "time": time_display,
-                "isoTime": s.get("lastActivity") or "",
-                "sessionId": sid,
-                "title": title,
-                "totalTokens": tot,
-                "inputTokens": inp,
-                "cacheTokens": ca,
-                "outputTokens": out,
-                "costCny": round(cost, 2),
-                "costCnyRaw": cost,
-            }
-            day_records.append(record)
-            flat_records.append(record)
-            global_idx += 1
+            if not summary_only:
+                sid = s.get("sessionId", "")
+                title = resolve_title(sid, titles)
+                time_display = format_time(s.get("lastActivity"))
+                if time_display == "--":
+                    time_display = d_str[5:]
+
+                record = {
+                    "index": global_idx,
+                    "date": d_str,
+                    "time": time_display,
+                    "isoTime": s.get("lastActivity") or "",
+                    "sessionId": sid,
+                    "title": title,
+                    "totalTokens": tot,
+                    "inputTokens": inp,
+                    "cacheTokens": ca,
+                    "outputTokens": out,
+                    "costCny": round(cost, 2),
+                    "costCnyRaw": cost,
+                }
+                day_records.append(record)
+                flat_records.append(record)
+                global_idx += 1
 
             day_total += tot
             day_input += inp
@@ -855,25 +851,28 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             day_output += out
             day_cost += cost
 
+        record_cnt = len(s_list) if summary_only else len(day_records)
+
         # 日小计统计构建
-        day_summary = {
-            "date": d_str,
-            "weekday": weekday_char,
-            "totalTokens": day_total,
-            "inputTokens": day_input,
-            "cacheTokens": day_cache,
-            "outputTokens": day_output,
-            "costCny": round(day_cost, 2),
-            "records": day_records,
-            "count": len(day_records)
-        }
-        weeks_dict[week_key]["days"].append(day_summary)
-        weeks_dict[week_key]["totalTokens"] += day_total
-        weeks_dict[week_key]["inputTokens"] += day_input
-        weeks_dict[week_key]["cacheTokens"] += day_cache
-        weeks_dict[week_key]["outputTokens"] += day_output
-        weeks_dict[week_key]["costCny"] += day_cost
-        weeks_dict[week_key]["count"] += len(day_records)
+        if not summary_only:
+            day_summary = {
+                "date": d_str,
+                "weekday": weekday_char,
+                "totalTokens": day_total,
+                "inputTokens": day_input,
+                "cacheTokens": day_cache,
+                "outputTokens": day_output,
+                "costCny": round(day_cost, 2),
+                "records": day_records,
+                "count": record_cnt
+            }
+            weeks_dict[week_key]["days"].append(day_summary)
+            weeks_dict[week_key]["totalTokens"] += day_total
+            weeks_dict[week_key]["inputTokens"] += day_input
+            weeks_dict[week_key]["cacheTokens"] += day_cache
+            weeks_dict[week_key]["outputTokens"] += day_output
+            weeks_dict[week_key]["costCny"] += day_cost
+            weeks_dict[week_key]["count"] += record_cnt
 
         daily_trend.append({
             "date": d_str,
@@ -882,7 +881,8 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             "inputTokens": day_input,
             "cacheTokens": day_cache,
             "outputTokens": day_output,
-            "costCny": round(day_cost, 2)
+            "costCny": round(day_cost, 2),
+            "count": record_cnt
         })
 
         grand_total += day_total
@@ -890,7 +890,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         grand_cache += day_cache
         grand_output += day_output
         grand_cost += day_cost
-        total_records += len(day_records)
+        total_records += record_cnt
 
     # 格式化周小计的 costCny
     weeks = list(weeks_dict.values())
@@ -898,7 +898,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         w["costCny"] = round(w["costCny"], 2)
 
     # 根据请求处理排序逻辑
-    if sort_by_tokens:
+    if sort_by_tokens and not summary_only:
         flat_records.sort(key=lambda x: x.get("totalTokens", 0), reverse=True)
         # 重新为 flat_records 编号
         for i, r in enumerate(flat_records, 1):
@@ -952,9 +952,10 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
         },
         "today": today_dict,
         "dailyTrend": daily_trend,
-        "weeks": weeks,
-        "flatRecords": flat_records
+        "weeks": [] if summary_only else weeks,
+        "flatRecords": [] if summary_only else flat_records
     }
+
 
 def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
     """
@@ -1160,7 +1161,7 @@ def get_all_agents_summary(force_refresh=False):
     def _fetch_single_agent(agent_id, agent_meta):
         """线程运行任务：独立获取并总结单个 Agent 的使用详情"""
         try:
-            data = get_daily_data(agent_id, force_refresh=force_refresh)
+            data = get_daily_data(agent_id, force_refresh=force_refresh, summary_only=True)
             sum_info = data["summary"]
             rec_cnt = data["totalRecordsCount"]
             daily_trend = data.get("dailyTrend", [])

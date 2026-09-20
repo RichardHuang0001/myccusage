@@ -334,9 +334,14 @@ def start_server(port=8488, default_agent="agy", auto_open=True, daemon_mode=Fal
         watchdog = threading.Thread(target=watchdog_loop, args=(server,), daemon=True)
         watchdog.start()
 
-    # 启动后台异步预热线程 (预加载默认 Agent 会话数据入内存，实现首屏秒开体验)
+    # 启动后台异步预热线程 (预热全景看板与默认 Agent，实现首屏秒开体验)
     def warmup_worker():
         try:
+            # 预热全景看板缓存（默认落地首页即为全景看板）
+            all_summary = get_all_agents_summary()
+            DataCache.set(("all", "summary", False), all_summary)
+
+            # 预热默认单 Agent 日报缓存
             w_agent = default_agent or "agy"
             data = get_daily_data(w_agent)
             DataCache.set((w_agent, "daily", False), data)

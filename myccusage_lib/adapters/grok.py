@@ -127,6 +127,10 @@ class GrokAdapter(BaseAgentAdapter):
         files = scan_files_fast(self.sessions_dir, extensions=("updates.jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
+            if not self._file_cache:
+                self._load_persisted_file_cache()
+            cache_modified = False
+
             for fpath in files:
                 try:
                     stat = os.stat(fpath)
@@ -135,6 +139,7 @@ class GrokAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+
                 # 使用防抖缓存策略
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
@@ -168,6 +173,7 @@ class GrokAdapter(BaseAgentAdapter):
                         pass
                     # 更新文件防抖缓存
                     self._file_cache[fpath] = (mtime, size, records)
+                    cache_modified = True
 
                 for sid, date_str, iso_str, inp, cr, out, tot in records:
                     # 每日切片数据聚合
@@ -209,9 +215,13 @@ class GrokAdapter(BaseAgentAdapter):
                     if iso_str > ss["lastActivity"]:
                         ss["lastActivity"] = iso_str
 
+            if cache_modified and not today_only:
+                self._save_persisted_file_cache()
+
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
         if not today_only:
             with self._lock:
                 self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res
+

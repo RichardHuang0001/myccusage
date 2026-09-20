@@ -158,6 +158,10 @@ class CodexAdapter(BaseAgentAdapter):
         session_files = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
+            if not self._file_cache:
+                self._load_persisted_file_cache()
+            cache_modified = False
+
             for fpath in session_files:
                 try:
                     stat = os.stat(fpath)
@@ -166,6 +170,7 @@ class CodexAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+
                 # 使用 mtime 和 size 作为判断条件，避免重复解析已处理过的日志
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
@@ -230,6 +235,7 @@ class CodexAdapter(BaseAgentAdapter):
                         records = cached[2] if cached else []
                     else:
                         self._file_cache[fpath] = (mtime, size, records)
+                        cache_modified = True
 
                 for sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot in records:
                     # 每日切片数据聚合
@@ -271,9 +277,13 @@ class CodexAdapter(BaseAgentAdapter):
                     if iso_str > ss["lastActivity"]:
                         ss["lastActivity"] = iso_str
 
+            if cache_modified and not today_only:
+                self._save_persisted_file_cache()
+
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
         if not today_only:
             with self._lock:
                 self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res
+

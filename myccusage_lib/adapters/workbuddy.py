@@ -129,6 +129,10 @@ class WorkBuddyAdapter(BaseAgentAdapter):
         session_map = {}
 
         with self._lock:
+            if not self._file_cache:
+                self._load_persisted_file_cache()
+            cache_modified = False
+
             for fpath in files:
                 try:
                     stat = os.stat(fpath)
@@ -137,6 +141,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
 
                 mtime, size = stat.st_mtime, stat.st_size
                 cached = self._file_cache.get(fpath)
+
                 # 使用 mtime 和 size 的防抖缓存，避免每次全量解析所有 jsonl
                 if cached and cached[0] == mtime and cached[1] == size:
                     records = cached[2]
@@ -185,6 +190,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                         records = cached[2] if cached else []
                     else:
                         self._file_cache[fpath] = (mtime, size, records)
+                        cache_modified = True
 
                 for sid, date_str, iso_str, miss, hit, out, tot in records:
                     # 每日切片数据聚合
@@ -226,9 +232,13 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                     if iso_str > ss["lastActivity"]:
                         ss["lastActivity"] = iso_str
 
+            if cache_modified and not today_only:
+                self._save_persisted_file_cache()
+
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
         if not today_only:
             with self._lock:
                 self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res
+
