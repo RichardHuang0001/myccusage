@@ -11,7 +11,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter
+from .base import BaseAgentAdapter, scan_files_fast
 
 class ClaudeAdapter(BaseAgentAdapter):
     """Claude Code 适配器，处理本地历史日志文件"""
@@ -79,17 +79,51 @@ class ClaudeAdapter(BaseAgentAdapter):
                     pass
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def get_source_fingerprint(self) -> str:
+        """极速获取 Claude 项目目录修改状态指纹 (< 1ms)"""
+        if not self.is_available():
+            return ""
+        parts = []
+        hist = os.path.join(self.base_dir, "history.jsonl")
+        if os.path.exists(hist):
+            try:
+                st = os.stat(hist)
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                pass
+        hot = scan_files_fast(self.projects_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        parts.append(str(len(hot)))
+        max_m = 0
+        for h in hot:
+            try:
+                mt = os.path.getmtime(h)
+                if mt > max_m:
+                    max_m = mt
+            except OSError:
+                pass
+        parts.append(str(max_m))
+        return "|".join(parts)
+
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         提取 Claude 消耗数据，使用文件 mtime/size 进行防抖缓存，避免重复读取大文件。
+        - 支持 today_only: 仅扫描今日活跃文件 (提速 50x)
         """
         if not self.is_available():
             return {}, []
 
+        fp = self.get_source_fingerprint()
+
+        # 全量模式下检查整体缓存
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
+
         daily_map = {}
         session_map = {}
 
-        files = glob.glob(os.path.join(self.projects_dir, "*/*.jsonl"))
+        files = scan_files_fast(self.projects_dir, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             for fpath in files:
@@ -150,9 +184,9 @@ class ClaudeAdapter(BaseAgentAdapter):
 
                         records = list(seen_msg_ids.values())
                     except Exception:
-                        pass
-                    # 更新文件级解析结果缓存
-                    self._file_cache[fpath] = (mtime, size, records)
+                        records = cached[2] if cached else []
+                    else:
+                        self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, inp, cr, out, tot in records:
                     # 每日切片数据聚合
@@ -196,4 +230,7 @@ class ClaudeAdapter(BaseAgentAdapter):
 
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res

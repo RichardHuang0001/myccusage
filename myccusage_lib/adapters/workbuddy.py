@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str
+from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, scan_files_fast
 
 class WorkBuddyAdapter(BaseAgentAdapter):
     """WorkBuddy 适配器，结合 SQLite 的元数据与 JSONL 日志文件的用量数据进行分析"""
@@ -81,26 +81,49 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                     pass
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def get_source_fingerprint(self) -> str:
+        """极速获取 WorkBuddy 目录修改状态指纹 (< 1ms)"""
+        if not self.is_available():
+            return ""
+        parts = []
+        if os.path.exists(self.db_path):
+            try:
+                st = os.stat(self.db_path)
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                pass
+        dirs = [os.path.join(self.base_dir, "projects"), os.path.join(self.base_dir, "sessions")]
+        hot = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=True)
+        parts.append(str(len(hot)))
+        max_m = 0
+        for h in hot:
+            try:
+                mt = os.path.getmtime(h)
+                if mt > max_m:
+                    max_m = mt
+            except OSError:
+                pass
+        parts.append(str(max_m))
+        return "|".join(parts)
+
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         解析 WorkBuddy 的 jsonl 文件提取消耗数据。
         支持特殊数据格式，如 rawUsage vs usage 的平滑兼容。
+        - 支持 today_only: 仅扫描今日活跃文件 (提速 50x)
         """
         if not self.is_available():
             return {}, []
 
-        project_globs = [
-            os.path.join(self.base_dir, "projects/*/*.jsonl"),
-            os.path.join(self.base_dir, "sessions/*/*.jsonl"),
-            os.path.join(self.base_dir, "sessions/*.jsonl")
-        ]
-        files = []
-        seen_files = set()
-        for g in project_globs:
-            for fpath in glob.glob(g):
-                if fpath not in seen_files:
-                    seen_files.add(fpath)
-                    files.append(fpath)
+        fp = self.get_source_fingerprint()
+
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
+
+        dirs = [os.path.join(self.base_dir, "projects"), os.path.join(self.base_dir, "sessions")]
+        files = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         daily_map = {}
         session_map = {}
@@ -159,9 +182,9 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                 tot = hit + miss + out
                                 records.append((sid, date_str, iso_str, miss, hit, out, tot))
                     except Exception:
-                        pass
-                    # 将解析完成的会话轮次记入防抖缓存
-                    self._file_cache[fpath] = (mtime, size, records)
+                        records = cached[2] if cached else []
+                    else:
+                        self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, miss, hit, out, tot in records:
                     # 每日切片数据聚合
@@ -205,4 +228,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
 
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res

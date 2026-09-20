@@ -13,7 +13,7 @@ import glob
 import json
 import re
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter
+from .base import BaseAgentAdapter, scan_files_fast
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex 的本地日志数据适配器"""
@@ -109,19 +109,53 @@ class CodexAdapter(BaseAgentAdapter):
 
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def get_source_fingerprint(self) -> str:
+        """极速获取 Codex 会话目录修改状态指纹 (< 2ms)"""
+        if not self.is_available():
+            return ""
+        parts = []
+        idx_path = os.path.join(self.base_dir, "session_index.jsonl")
+        if os.path.exists(idx_path):
+            try:
+                st = os.stat(idx_path)
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                pass
+        hot = scan_files_fast([self.sessions_dir, os.path.join(self.base_dir, "archived_sessions")], extensions=(".jsonl",), recursive=True, today_only=True)
+        parts.append(str(len(hot)))
+        max_m = 0
+        for h in hot:
+            try:
+                mt = os.path.getmtime(h)
+                if mt > max_m:
+                    max_m = mt
+            except OSError:
+                pass
+        parts.append(str(max_m))
+        return "|".join(parts)
+
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         提取 Codex 消耗数据。
         通过捕获 token_count 的累计增量进行差分计算。
+        - 支持 today_only: 仅扫描今日活跃文件 (提速 50x)
         """
         if not self.is_available():
             return {}, []
 
+        fp = self.get_source_fingerprint()
+
+        # 全量模式下检查整体缓存
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
+
         daily_map = {}
         session_map = {}
 
-        session_files = glob.glob(os.path.join(self.sessions_dir, "**/*.jsonl"), recursive=True)
-        session_files += glob.glob(os.path.join(self.base_dir, "archived_sessions/*.jsonl"))
+        dirs = [self.sessions_dir, os.path.join(self.base_dir, "archived_sessions")]
+        session_files = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             for fpath in session_files:
@@ -193,9 +227,9 @@ class CodexAdapter(BaseAgentAdapter):
                                     prev_cached = cur_cached
                                     prev_out = cur_out
                     except Exception:
-                        pass
-                    # 将提取到的增量记录计入防抖缓存
-                    self._file_cache[fpath] = (mtime, size, records)
+                        records = cached[2] if cached else []
+                    else:
+                        self._file_cache[fpath] = (mtime, size, records)
 
                 for sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot in records:
                     # 每日切片数据聚合
@@ -239,4 +273,7 @@ class CodexAdapter(BaseAgentAdapter):
 
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res

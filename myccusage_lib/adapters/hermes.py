@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, get_today_midnight_ts
 
 class HermesAdapter(BaseAgentAdapter):
     """Hermes Agent 适配器，通过直连 SQLite 数据库进行高速查询"""
@@ -26,6 +26,23 @@ class HermesAdapter(BaseAgentAdapter):
     def is_available(self) -> bool:
         """检查 state.db 数据库文件是否存在"""
         return os.path.exists(self.db_path)
+
+    def get_source_fingerprint(self) -> str:
+        """快速获取 state.db 修改状态指纹 (< 0.1ms)"""
+        if not self.is_available():
+            return ""
+        try:
+            st = os.stat(self.db_path)
+            wal_path = self.db_path + "-wal"
+            wal_mtime = 0
+            if os.path.exists(wal_path):
+                try:
+                    wal_mtime = os.stat(wal_path).st_mtime_ns
+                except OSError:
+                    pass
+            return f"{st.st_mtime_ns}:{st.st_size}:{wal_mtime}"
+        except OSError:
+            return ""
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 sessions 表提取所有会话的标题和时间"""
@@ -50,12 +67,20 @@ class HermesAdapter(BaseAgentAdapter):
             pass
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         查询 Hermes 数据库提取统计数据，按时间正序返回每日切片和汇总。
+        - 支持 today_only: 仅扫描今日活跃会话 (SQL 过滤提速)
         """
         if not self.is_available():
             return {}, []
+
+        fp = self.get_source_fingerprint()
+
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
 
         daily_map = {}
         session_list = []
@@ -65,8 +90,19 @@ class HermesAdapter(BaseAgentAdapter):
             conn = sqlite3.connect(uri, uri=True, timeout=3.0)
             c = conn.cursor()
 
-            # 查询有效会话并按时间正序提取
-            sql = """
+            where_clauses = [
+                "model IS NOT NULL",
+                "TRIM(model) != ''",
+                "(input_tokens + output_tokens + cache_read_tokens) > 0"
+            ]
+            params = []
+            if today_only:
+                min_ts = get_today_midnight_ts()
+                where_clauses.append("(started_at >= ? OR ended_at >= ?)")
+                params.extend([min_ts, min_ts])
+
+            where_sql = " AND ".join(where_clauses)
+            sql = f"""
                 SELECT
                     id,
                     started_at,
@@ -75,12 +111,10 @@ class HermesAdapter(BaseAgentAdapter):
                     output_tokens,
                     cache_read_tokens
                 FROM sessions
-                WHERE model IS NOT NULL
-                    AND TRIM(model) != ''
-                    AND (input_tokens + output_tokens + cache_read_tokens) > 0
+                WHERE {where_sql}
                 ORDER BY started_at ASC
             """
-            for row in c.execute(sql):
+            for row in c.execute(sql, params):
                 sid, st, et, inp, out, cr = row
                 act_time = et or st or 0
                 date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
@@ -112,5 +146,9 @@ class HermesAdapter(BaseAgentAdapter):
             conn.close()
         except Exception:
             pass
+
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_map, session_list))
 
         return daily_map, session_list

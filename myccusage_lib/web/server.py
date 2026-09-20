@@ -21,7 +21,8 @@ from ..core import (
     SUPPORTED_AGENTS,
     get_daily_data,
     get_session_data,
-    get_all_agents_summary
+    get_all_agents_summary,
+    get_today_quick_summary
 )
 
 # 定位静态资源目录，使用绝对路径以避免运行目录不同导致的文件找不到问题
@@ -167,6 +168,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     # 单独刷新某个 Agent 的数据
                     res = get_daily_data(agent, force_refresh=True)
                     DataCache.set((agent, "daily", False), res)
+                # 同时强制刷新今日摘要缓存
+                get_today_quick_summary(force_refresh=True)
                 self.send_json({"success": True, "data": res})
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
@@ -187,6 +190,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             ServerState.has_client_connected = True  # 记录至少一次客户端连接
             ServerState.last_heartbeat_time = time.time()  # 更新心跳时间，重置看门狗
             self.send_json({"pong": True})
+            return
+
+        # 今日轻量极速摘要接口（供 Dock 状态栏或轻量微型组件高频轮询）
+        if path == "/api/today":
+            force = query.get("refresh", ["0"])[0] in ("1", "true")
+            try:
+                data = get_today_quick_summary(force_refresh=force)
+                self.send_json(data)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
             return
 
         # 1. API 路由设计
@@ -279,7 +292,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": "静态文件未找到"}, 404)
 
-def start_server(port=8488, default_agent="agy", auto_open=True):
+def start_server(port=8488, default_agent="agy", auto_open=True, daemon_mode=False):
     """
     启动本地 HTTP 服务器，完成组件初始化并调度守护线程。
     """
@@ -306,7 +319,10 @@ def start_server(port=8488, default_agent="agy", auto_open=True):
     print("=" * 78)
     print(f"  📡 本地地址: {url}")
     print(f"  📊 默认 Agent: {SUPPORTED_AGENTS.get(default_agent, {}).get('name', default_agent)}")
-    print("  💡 按 Ctrl+C 停止服务，或直接关闭浏览器网页自动退出")
+    if daemon_mode:
+        print("  💡 运行模式: 常驻守护服务 (Dock 宿主守护中，按 Ctrl+C 停止)")
+    else:
+        print("  💡 按 Ctrl+C 停止服务，或直接关闭浏览器网页自动退出")
     print("=" * 78)
 
     # 注册全局状态，使得其他线程（如看门狗）能够安全访问当前服务器实例
@@ -315,10 +331,10 @@ def start_server(port=8488, default_agent="agy", auto_open=True):
     ServerState.last_heartbeat_time = time.time()
     ServerState.shutdown_initiated = False
 
-    # 启动看门狗守护线程 (网页关闭联动安全退出)
-    # 使用 daemon=True，以便主线程退出时看门狗自动终结
-    watchdog = threading.Thread(target=watchdog_loop, args=(server,), daemon=True)
-    watchdog.start()
+    # 启动看门狗守护线程 (仅在非 daemon 模式下启用网页关闭联动退出)
+    if not daemon_mode:
+        watchdog = threading.Thread(target=watchdog_loop, args=(server,), daemon=True)
+        watchdog.start()
 
     # 启动后台异步预热线程 (预加载默认 Agent 会话数据入内存，实现首屏秒开体验)
     def warmup_worker():

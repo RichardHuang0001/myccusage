@@ -10,6 +10,7 @@ myccusage_lib.cli:
 import sys
 import os
 import shutil
+import subprocess
 import unicodedata
 from .core import (
     SUPPORTED_AGENTS,
@@ -467,7 +468,9 @@ def print_usage_hint():
     print("  -w, --web               启动本地网页仪表盘 Dashboard (默认端口 8488)")
     print("  -p, --port <端口>       指定 Web 仪表盘端口号 (默认 8488)\n")
     print("排序与通用选项:")
+    print("  dock, --dock            一键启动 macOS 原生程序坞常驻微型看板 (支持自动极速构建与拉起)")
     print("  -t, --tokens            按【Token 消耗量】降序排列（默认按时间正序排列，最新在最底部）")
+    print("  -v, --version           查看版本号 (100% Native)")
     print("  -h, --help              查看本帮助信息\n")
     print("示例:")
     print("  myccusage --agy               # Antigravity 每日会话账本 (最新在最底部，小计防漂移)")
@@ -476,8 +479,57 @@ def print_usage_hint():
     print("  myccusage --agy -s -t         # Antigravity 项目总用量大户排行")
     print("  myccusage --opencode          # OpenCode 每日会话账本")
     print("  myccusage --workbuddy         # WorkBuddy 每日会话账本")
+    print("  myccusage dock                # 启动 macOS 原生程序坞常驻应用 (DockTile + 磨砂面板)")
     print("  myccusage --web               # 一键启动 Web 前端仪表盘并自动打开浏览器")
     print("=" * 78)
+
+def launch_macos_dock_app():
+    """在 macOS 下启动或构建并启动原生程序坞常驻应用"""
+    if sys.platform != "darwin":
+        print("❌ 错误: macOS 程序坞常驻应用仅支持在 macOS 系统上运行。")
+        return
+
+    # 1. 寻找可能已构建的 app
+    candidates = [
+        os.path.expanduser("~/Applications/myccusage.app"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "dist/myccusage.app"),
+        os.path.expanduser("~/.local/share/myccusage/myccusage.app"),
+    ]
+    app_path = None
+    for c in candidates:
+        if os.path.exists(c):
+            app_path = c
+            break
+
+    # 2. 如果未找到已构建的 app，自动执行构建脚本
+    if not app_path:
+        script_candidates = [
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "macos/build_app.sh"),
+            os.path.join(os.path.dirname(__file__), "macos/build_app.sh"),
+        ]
+        build_script = None
+        for s in script_candidates:
+            if os.path.exists(s):
+                build_script = s
+                break
+
+        if build_script:
+            print("⚡️ 检测到首次运行，正在自动构建原生 macOS 程序坞应用 (约需 2~3 秒)...")
+            res = subprocess.run(["bash", build_script])
+            if res.returncode == 0:
+                for c in candidates:
+                    if os.path.exists(c):
+                        app_path = c
+                        break
+        else:
+            print("❌ 未找到编译构建脚本 macos/build_app.sh")
+            return
+
+    if app_path and os.path.exists(app_path):
+        print(f"🚀 正在启动 macOS 程序坞常驻微型应用: {app_path}")
+        subprocess.run(["open", app_path])
+    else:
+        print("❌ 启动失败，未找到可运行的 myccusage.app")
 
 def main(raw_args=None):
     """
@@ -486,6 +538,12 @@ def main(raw_args=None):
     """
     if raw_args is None:
         raw_args = sys.argv[1:]
+
+    # 如果存在版本查询标记，输出版本并退出
+    if "-v" in raw_args or "--version" in raw_args:
+        from . import __version__
+        print(f"myccusage v{__version__} (100% Native, Zero-ccusage)")
+        return
 
     # 如果存在帮助标记，直接输出用法信息并退出
     if "-h" in raw_args or "--help" in raw_args:
@@ -497,16 +555,29 @@ def main(raw_args=None):
     mode = "daily"  # 默认 -d 每日会话账本模式
     sort_by_tokens = False
     is_web_mode = False
+    is_dock_mode = False
     web_port = 8488
+    is_daemon = False
+    auto_open = True
     clean_args = []
 
     # 手动解析命令行参数（避免依赖外部库的复杂逻辑，支持灵活标志位置）
     i = 0
     while i < len(raw_args):
         a = raw_args[i]
+        # 解析 Dock 模式标记
+        if a in ("--dock", "dock"):
+            is_dock_mode = True
         # 解析 Web 模式标记
-        if a in ("--web", "-w", "web"):
+        elif a in ("--web", "-w", "web", "ui"):
             is_web_mode = True
+        # 解析常驻守护标记
+        elif a == "--daemon":
+            is_daemon = True
+            is_web_mode = True
+        # 解析禁止自动打开浏览器标记
+        elif a in ("--no-open", "-n"):
+            auto_open = False
         # 解析自定义端口标记
         elif a in ("--port", "-p") and i + 1 < len(raw_args):
             i += 1
@@ -544,10 +615,15 @@ def main(raw_args=None):
             clean_args.append(a)
         i += 1
 
+    # 如果激活了 Dock 模式，调度到 macOS 原生程序坞构建与拉起逻辑
+    if is_dock_mode:
+        launch_macos_dock_app()
+        return
+
     # 如果激活了 Web 模式，将调度到服务端代码
     if is_web_mode:
         from .web.server import start_server
-        start_server(port=web_port, default_agent=agent_type or "agy")
+        start_server(port=web_port, default_agent=agent_type or "agy", auto_open=auto_open, daemon_mode=is_daemon)
         return
 
     # CLI 模式下要求至少指定一个有效的目标 Agent
@@ -571,3 +647,7 @@ def main(raw_args=None):
         else:
             print(f"错误: {msg}", file=sys.stderr)
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+

@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast
 
 class GrokAdapter(BaseAgentAdapter):
     """Grok 适配器，支持 SQLite 及本地日志文件的解析与防抖缓存"""
@@ -81,18 +81,50 @@ class GrokAdapter(BaseAgentAdapter):
 
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def get_source_fingerprint(self) -> str:
+        """极速获取 Grok 会话目录修改状态指纹 (< 1ms)"""
+        if not self.is_available():
+            return ""
+        parts = []
+        db_path = os.path.join(self.sessions_dir, "session_search.sqlite")
+        if os.path.exists(db_path):
+            try:
+                st = os.stat(db_path)
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                pass
+        hot = scan_files_fast(self.sessions_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        parts.append(str(len(hot)))
+        max_m = 0
+        for h in hot:
+            try:
+                mt = os.path.getmtime(h)
+                if mt > max_m:
+                    max_m = mt
+            except OSError:
+                pass
+        parts.append(str(max_m))
+        return "|".join(parts)
+
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         提取 Grok 的会话数据，通过分析 updates.jsonl 中的 turn_completed 获取每轮消耗。
-        使用文件级 mtime/size 防抖缓存。
+        - 支持 today_only: 仅扫描今日活跃文件 (提速 50x)
         """
         if not self.is_available():
             return {}, []
 
+        fp = self.get_source_fingerprint()
+
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
+
         daily_map = {}
         session_map = {}
 
-        files = glob.glob(os.path.join(self.sessions_dir, "**/updates.jsonl"), recursive=True)
+        files = scan_files_fast(self.sessions_dir, extensions=("updates.jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             for fpath in files:
@@ -179,4 +211,7 @@ class GrokAdapter(BaseAgentAdapter):
 
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res

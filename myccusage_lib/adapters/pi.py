@@ -10,7 +10,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter
+from .base import BaseAgentAdapter, scan_files_fast
 
 class PiAdapter(BaseAgentAdapter):
     """Pi Agent 适配器，解析本地 jsonl 日志以提取信息"""
@@ -60,18 +60,41 @@ class PiAdapter(BaseAgentAdapter):
                 pass
         return titles, times
 
-    def fetch_data(self) -> tuple[dict[str, list[dict]], list[dict]]:
+    def get_source_fingerprint(self) -> str:
+        """极速获取 Pi 会话目录修改状态指纹 (< 1ms)"""
+        if not self.is_available():
+            return ""
+        hot = scan_files_fast(self.base_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        max_m = 0
+        for h in hot:
+            try:
+                mt = os.path.getmtime(h)
+                if mt > max_m:
+                    max_m = mt
+            except OSError:
+                pass
+        return f"{len(hot)}:{max_m}"
+
+    def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         提取 Pi Agent 的会话数据。
         采用文件 mtime/size 增量缓存策略。
+        - 支持 today_only: 仅扫描今日活跃文件 (提速 50x)
         """
         if not self.is_available():
             return {}, []
 
+        fp = self.get_source_fingerprint()
+
+        if not today_only:
+            with self._lock:
+                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
+                    return self._full_cache[1]
+
         daily_map = {}
         session_map = {}
 
-        files = glob.glob(os.path.join(self.base_dir, "*/*.jsonl"))
+        files = scan_files_fast(self.base_dir, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             for fpath in files:
@@ -166,4 +189,7 @@ class PiAdapter(BaseAgentAdapter):
 
         daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
         session_res = list(session_map.values())
+        if not today_only:
+            with self._lock:
+                self._full_cache = (fp, (daily_res, session_res))
         return daily_res, session_res

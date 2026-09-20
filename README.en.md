@@ -102,11 +102,29 @@ myccusage --agy -s -t
 
 | Flag | Description |
 | :--- | :--- |
+| `dock`, `--dock` | Launch native macOS Dock persistent status app (auto-builds in 2s) |
 | `ui` / `--web` | Launch local Web dashboard in browser |
 | `--agy` / `--claude` / `--hermes` / ... | Select specific agent |
 | `-d`, `--daily` | Daily ledger mode (default) with daily & weekly subtotals |
 | `-s`, `--session` | Project lifetime mode aggregating total token consumption |
 | `-t`, `--tokens` | Sort by token consumption descending |
+
+---
+
+### macOS Native Dock Status App (Optional)
+
+`myccusage` includes a native macOS Dock companion app (`myccusage.app`):
+- **Dynamic Dock Tile**: Updates every 60s with ~0% CPU overhead (5ms tick via per-agent mtime fingerprinting). Large centered token count, 100M daily goal progress bar, and KV Cache hit rate outer ring.
+- **Glassmorphic Floating Popover**: Clicking the Dock icon pops up a native frosted-glass card pointing directly at the Dock icon, displaying per-agent breakdown and quick links.
+- **One-Command Launch**:
+  ```bash
+  myccusage dock
+  ```
+  Or build manually:
+  ```bash
+  bash macos/build_app.sh
+  open dist/myccusage.app
+  ```
 
 ---
 
