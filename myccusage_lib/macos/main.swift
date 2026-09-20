@@ -318,9 +318,9 @@ struct DockTileView: View {
                 
                 // 今日 Token 总量大字展示
                 Text(summary.displayTokens)
-                    .font(.system(size: summary.displayTokens.count > 4 ? 26 : 30, weight: .heavy, design: .rounded))
+                    .font(.system(size: summary.displayTokens.count > 5 ? 24 : (summary.displayTokens.count > 4 ? 27 : 30), weight: .heavy, design: .rounded))
                     .foregroundColor(.white)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.7)
                     .lineLimit(1)
                     .padding(.bottom, 2)
             }
@@ -329,6 +329,9 @@ struct DockTileView: View {
         .frame(width: 128, height: 128)
     }
 }
+
+// MARK: - 悬浮卡片全局配置常量
+private let popoverCardWidth: CGFloat = 340
 
 // MARK: - 悬浮卡片视图 (参考用户 Status Trio 风格设计)
 struct FloatingPopoverView: View {
@@ -349,6 +352,7 @@ struct FloatingPopoverView: View {
                         Text("今日 AI Token 用量")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.primary)
+                            .lineLimit(1)
                     }
                     
                     Spacer()
@@ -361,43 +365,60 @@ struct FloatingPopoverView: View {
                         Text(formatTime(last))
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 
-                // 主大字与数据指标行
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text(state.summary.displayTokens)
-                        .font(.system(size: 32, weight: .black, design: .rounded))
-                        .foregroundColor(.primary)
+                // 主大字与数据指标行 (支持三位数 + M/K 宽裕排版，严防多行折字)
+                HStack(alignment: .lastTextBaseline, spacing: 0) {
+                    // 左侧：主 Token 数值展示
+                    HStack(alignment: .lastTextBaseline, spacing: 4) {
+                        Text(state.summary.displayTokens)
+                            .font(.system(
+                                size: state.summary.displayTokens.count >= 6 ? 26 : (state.summary.displayTokens.count == 5 ? 28 : 32),
+                                weight: .black,
+                                design: .rounded
+                            ))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        
+                        Text("Tokens")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
                     
-                    Text("Tokens")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.secondary)
+                    Spacer(minLength: 14)
                     
-                    Spacer()
-                    
-                    // 命中率与费用指标胶囊
-                    HStack(spacing: 4) {
-                        VStack(alignment: .trailing, spacing: 1) {
+                    // 右侧：命中率与费用指标 (独立尺寸锁定，保证单行工整)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 2) {
                             Text("缓存命中")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
+                                .lineLimit(1)
                             Text("\(String(format: "%.1f", state.summary.cacheHitRate))%")
                                 .font(.system(size: 13, weight: .heavy, design: .rounded))
                                 .foregroundColor(Color(red: 0.15, green: 0.75, blue: 0.95))
+                                .lineLimit(1)
                         }
                         
-                        Divider().frame(height: 20).padding(.horizontal, 2)
+                        Divider().frame(height: 22).padding(.horizontal, 2)
                         
-                        VStack(alignment: .trailing, spacing: 1) {
+                        VStack(alignment: .trailing, spacing: 2) {
                             Text("估算费用")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
+                                .lineLimit(1)
                             Text("¥\(String(format: "%.2f", state.summary.costCny))")
                                 .font(.system(size: 13, weight: .heavy, design: .rounded))
                                 .foregroundColor(.primary)
+                                .lineLimit(1)
                         }
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .padding(14)
@@ -506,7 +527,7 @@ struct FloatingPopoverView: View {
             }
             .padding(6)
         }
-        .frame(width: 310)
+        .frame(width: popoverCardWidth)
         .background(
             // 原生磨砂玻璃背景
             VisualEffectBlur(material: .popover, blendingMode: .behindWindow)
@@ -564,7 +585,7 @@ struct AnchoredPopoverContainerView: View {
             .frame(height: 9)
             .offset(y: -0.5) // 与卡片底边无缝贴合
         }
-        .frame(width: 310)
+        .frame(width: popoverCardWidth)
         .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 6)
         .padding(.bottom, 2)
     }
@@ -613,10 +634,13 @@ struct AgentRowView: View {
                 Text(agent.displayTokens)
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 Text("\(String(format: "%.0f", agent.hitRate))% 命中")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
@@ -662,7 +686,7 @@ struct VisualEffectBlur: NSViewRepresentable {
 class FloatingPopoverWindow: NSPanel {
     init(contentView: NSView) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 310, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: popoverCardWidth, height: 300),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -692,7 +716,7 @@ class FloatingPopoverWindow: NSPanel {
         if let hv = self.contentView {
             let fit = hv.fittingSize
             if fit.width > 0 && fit.height > 0 {
-                self.setContentSize(NSSize(width: 310, height: fit.height))
+                self.setContentSize(NSSize(width: popoverCardWidth, height: fit.height))
             }
         }
         
