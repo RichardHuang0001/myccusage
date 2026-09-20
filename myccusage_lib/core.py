@@ -906,6 +906,34 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
 
     hit_rate = round(grand_cache / max(1, grand_input + grand_cache) * 100, 2)
 
+    today_entry = next((d for d in daily_trend if d["date"] == today_str), None)
+    if today_entry:
+        t_inp = today_entry["inputTokens"]
+        t_ca = today_entry["cacheTokens"]
+        today_dict = {
+            "date": today_str,
+            "weekday": today_entry.get("weekday", ""),
+            "totalTokens": today_entry["totalTokens"],
+            "inputTokens": t_inp,
+            "cacheTokens": t_ca,
+            "outputTokens": today_entry["outputTokens"],
+            "costCny": today_entry["costCny"],
+            "cacheHitRate": round(t_ca / max(1, t_inp + t_ca) * 100, 1),
+            "sessionCount": today_entry.get("count", 0)
+        }
+    else:
+        today_dict = {
+            "date": today_str,
+            "weekday": WEEKDAYS[datetime.now().weekday()],
+            "totalTokens": 0,
+            "inputTokens": 0,
+            "cacheTokens": 0,
+            "outputTokens": 0,
+            "costCny": 0.0,
+            "cacheHitRate": 0.0,
+            "sessionCount": 0
+        }
+
     return {
         "agent": agent_type,
         "displayName": display_name,
@@ -922,6 +950,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False):
             "costUsd": round(grand_cost / 7.2, 2),
             "cacheHitRate": hit_rate
         },
+        "today": today_dict,
         "dailyTrend": daily_trend,
         "weeks": weeks,
         "flatRecords": flat_records
@@ -1113,12 +1142,12 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
         "flatRecords": sessions
     }
 
-def get_all_agents_summary():
+def get_all_agents_summary(force_refresh=False):
     """
     汇总所有支持的 Agent 的用量与概览，支持 Web 端全局看板 (多线程并发调度极速版)
     
     使用 ThreadPoolExecutor 进行并发调度，将每一个 Agent 的日常抓取计算分发到独立的线程执行。
-    大大缩减了当有多个外部/庞大日志分析任务堆叠时的整体时延。
+    聚合全平台全 Agent 每日趋势 (dailyTrend)、今日实时指标 (today) 以及全周期汇总 (grandSummary)。
     """
     agents_summary = []
     grand_tokens = 0
@@ -1131,9 +1160,10 @@ def get_all_agents_summary():
     def _fetch_single_agent(agent_id, agent_meta):
         """线程运行任务：独立获取并总结单个 Agent 的使用详情"""
         try:
-            data = get_daily_data(agent_id)
+            data = get_daily_data(agent_id, force_refresh=force_refresh)
             sum_info = data["summary"]
             rec_cnt = data["totalRecordsCount"]
+            daily_trend = data.get("dailyTrend", [])
             return {
                 "id": agent_id,
                 "name": agent_meta["name"],
@@ -1144,7 +1174,8 @@ def get_all_agents_summary():
                 "costCny": sum_info.get("costCny", 0.0),
                 "costUsd": sum_info.get("costUsd", 0.0),
                 "recordsCount": rec_cnt,
-                "cacheHitRate": sum_info.get("cacheHitRate", 0.0)
+                "cacheHitRate": sum_info.get("cacheHitRate", 0.0),
+                "dailyTrend": daily_trend
             }
         except Exception:
             # 个别 Agent 若在本地未安装或无记录，宽容返回 0
@@ -1158,7 +1189,8 @@ def get_all_agents_summary():
                 "costCny": 0.0,
                 "costUsd": 0.0,
                 "recordsCount": 0,
-                "cacheHitRate": 0.0
+                "cacheHitRate": 0.0,
+                "dailyTrend": []
             }
 
     agent_ids = list(SUPPORTED_AGENTS.keys())
@@ -1174,10 +1206,16 @@ def get_all_agents_summary():
             aid = future_map[fut]
             results_by_id[aid] = fut.result()
 
+    daily_trend_by_date = {}
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_active_agents = set()
+
     # 严格保持 SUPPORTED_AGENTS 初始定义的排列顺序
     for aid in agent_ids:
         item = results_by_id[aid]
-        agents_summary.append(item)
+        # agents 列表中剔除冗余的单 Agent dailyTrend，保证传输体量精简轻快
+        clean_item = {k: v for k, v in item.items() if k != "dailyTrend"}
+        agents_summary.append(clean_item)
         grand_tokens += item["totalTokens"]
         grand_input += item["inputTokens"]
         grand_cache += item["cacheTokens"]
@@ -1185,19 +1223,82 @@ def get_all_agents_summary():
         grand_cost += item["costCny"]
         grand_sessions += item["recordsCount"]
 
+        # 聚合每日时序数据
+        for d in item.get("dailyTrend", []):
+            d_str = d.get("date")
+            if not d_str:
+                continue
+            if d_str not in daily_trend_by_date:
+                daily_trend_by_date[d_str] = {
+                    "date": d_str,
+                    "weekday": d.get("weekday", ""),
+                    "totalTokens": 0,
+                    "inputTokens": 0,
+                    "cacheTokens": 0,
+                    "outputTokens": 0,
+                    "costCny": 0.0
+                }
+            cur = daily_trend_by_date[d_str]
+            cur["totalTokens"] += d.get("totalTokens", 0)
+            cur["inputTokens"] += d.get("inputTokens", 0)
+            cur["cacheTokens"] += d.get("cacheTokens", 0)
+            cur["outputTokens"] += d.get("outputTokens", 0)
+            cur["costCny"] += d.get("costCny", 0.0)
+
+            if d_str == today_str and d.get("totalTokens", 0) > 0:
+                today_active_agents.add(aid)
+
+    # 聚合各日趋势按日期正序排列
+    aggregated_trend = sorted(daily_trend_by_date.values(), key=lambda x: x["date"])
+    for x in aggregated_trend:
+        x["costCny"] = round(x["costCny"], 2)
+
+    # 提取今日实时总览
+    today_data = daily_trend_by_date.get(today_str, {
+        "date": today_str,
+        "weekday": WEEKDAYS[datetime.now().weekday()],
+        "totalTokens": 0,
+        "inputTokens": 0,
+        "cacheTokens": 0,
+        "outputTokens": 0,
+        "costCny": 0.0
+    })
+    today_inp = today_data["inputTokens"]
+    today_ca = today_data["cacheTokens"]
+    today_hit_rate = round(today_ca / max(1, today_inp + today_ca) * 100, 1)
+
+    today_summary = {
+        "date": today_str,
+        "weekday": today_data.get("weekday", ""),
+        "totalTokens": today_data["totalTokens"],
+        "inputTokens": today_inp,
+        "cacheTokens": today_ca,
+        "outputTokens": today_data["outputTokens"],
+        "costCny": round(today_data["costCny"], 2),
+        "cacheHitRate": today_hit_rate,
+        "activeAgentsCount": len(today_active_agents)
+    }
+
     grand_hit_rate = round(grand_cache / max(1, grand_input + grand_cache) * 100, 2)
+    grand_summary = {
+        "totalTokens": grand_tokens,
+        "inputTokens": grand_input,
+        "cacheTokens": grand_cache,
+        "outputTokens": grand_output,
+        "costCny": round(grand_cost, 2),
+        "costUsd": round(grand_cost / 7.2, 2),
+        "totalSessions": grand_sessions,
+        "cacheHitRate": grand_hit_rate
+    }
 
     return {
-        "grandSummary": {
-            "totalTokens": grand_tokens,
-            "inputTokens": grand_input,
-            "cacheTokens": grand_cache,
-            "outputTokens": grand_output,
-            "costCny": round(grand_cost, 2),
-            "costUsd": round(grand_cost / 7.2, 2),
-            "totalSessions": grand_sessions,
-            "cacheHitRate": grand_hit_rate
-        },
+        "displayName": "全景对比 (全 Agent 矩阵)",
+        "mode": "daily",
+        "grandSummary": grand_summary,
+        "summary": grand_summary,
+        "today": today_summary,
+        "activeDaysCount": len(aggregated_trend),
+        "dailyTrend": aggregated_trend,
         "agents": agents_summary
     }
 

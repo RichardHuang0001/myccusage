@@ -185,9 +185,13 @@
     return firstKey ? all[firstKey] : DEFAULT_PRICING_MODELS['deepseek-v4.1-flash'];
   }
 
+  // 从 URL 参数中读取默认 Agent（若未指定则默认全新主打 “all” 全景对比）
+  const initialUrlParams = new URLSearchParams(window.location.search);
+  const initialAgent = initialUrlParams.get('agent') || 'all';
+
   // 全局状态
   const state = {
-    agent: 'agy',
+    agent: initialAgent,
     mode: 'daily',
     sort: 'time',
     timeSortOrder: 'desc', // Web 端默认时间倒序 (最新在最顶上)
@@ -237,6 +241,14 @@
     valRecordsCount: document.getElementById('valRecordsCount'),
     badgeActivePeriod: document.getElementById('badgeActivePeriod'),
     badgeRecordsType: document.getElementById('badgeRecordsType'),
+    subRecordsDetail: document.getElementById('subRecordsDetail'),
+
+    // 今日指标卡片 (新增)
+    valTodayTokens: document.getElementById('valTodayTokens'),
+    valTodayCost: document.getElementById('valTodayCost'),
+    subTodayDetail: document.getElementById('subTodayDetail'),
+    titleTodayUsage: document.getElementById('titleTodayUsage'),
+    badgeToday: document.getElementById('badgeToday'),
 
     // 7天 / 14天 滚动指标卡片
     val7DaysTokens: document.getElementById('val7DaysTokens'),
@@ -435,6 +447,15 @@
 
     // 启动心跳保活与页面关闭联动退出机制
     startHeartbeat();
+
+    // 同步导航药丸按钮与 state.agent 状态
+    if (el.agentSelector) {
+      const activeBtn = el.agentSelector.querySelector(`.segment-btn[data-agent="${state.agent}"]`);
+      if (activeBtn) {
+        el.agentSelector.querySelectorAll('.segment-btn').forEach(b => b.classList.remove('active'));
+        activeBtn.classList.add('active');
+      }
+    }
 
     bindEvents();
     loadData();
@@ -1140,7 +1161,11 @@
       el.btnSortTime.classList.add('active');
       el.btnSortTokens.classList.remove('active');
       el.btnSortTime.textContent = state.timeSortOrder === 'desc' ? '时间倒序 (最新在顶)' : '时间正序 (最新在底)';
-      filterAndRenderLedger();
+      if (state.agent === 'all' && state.allAgentsData) {
+        renderAllAgentsOverview(state.allAgentsData);
+      } else {
+        filterAndRenderLedger();
+      }
     });
 
     el.btnSortTokens.addEventListener('click', () => {
@@ -1148,7 +1173,11 @@
       state.sort = 'tokens';
       el.btnSortTokens.classList.add('active');
       el.btnSortTime.classList.remove('active');
-      filterAndRenderLedger();
+      if (state.agent === 'all' && state.allAgentsData) {
+        renderAllAgentsOverview(state.allAgentsData);
+      } else {
+        filterAndRenderLedger();
+      }
     });
 
     // 刷新按钮 (强制刷新今日切片)
@@ -1200,7 +1229,9 @@
       localStorage.setItem('myccusage_theme', 'light');
     }
     // 重新渲染图表以应用主题颜色
-    if (state.data) {
+    if (state.agent === 'all' && state.allAgentsData) {
+      renderCharts(state.allAgentsData);
+    } else if (state.data) {
       renderCharts(state.data);
     }
   }
@@ -1215,13 +1246,15 @@
     `;
 
     if (state.agent === 'all') {
-      // 全景模式
-      el.chartsSection.style.display = 'none';
+      // 全景模式：图表区与各 Agent 对比卡片区全部显示
+      el.chartsSection.style.display = 'grid';
       el.allAgentsSection.style.display = 'block';
+      if (el.modeSelector) el.modeSelector.style.display = 'none';
       try {
         const res = await fetch('/api/all');
         const json = await res.json();
         state.allAgentsData = json;
+        state.data = json;
         renderAllAgentsOverview(json);
       } catch (err) {
         el.ledgerContainer.innerHTML = `<div class="empty-state">❌ 拉取全景数据失败: ${err.message}</div>`;
@@ -1229,6 +1262,7 @@
       return;
     }
 
+    if (el.modeSelector) el.modeSelector.style.display = 'flex';
     el.chartsSection.style.display = 'grid';
     el.allAgentsSection.style.display = 'none';
 
@@ -1316,6 +1350,38 @@
       el.subActiveDays.textContent = `全生命周期累计`;
       el.badgeRecordsType.textContent = '任务统计';
       el.valRecordsCount.textContent = `${data.totalRecordsCount} 个项目`;
+    }
+
+    // 渲染今日消耗指标卡片 (联动动态费率)
+    let today = data.today;
+    if (!today && Array.isArray(data.dailyTrend)) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const entry = data.dailyTrend.find(d => d.date === todayStr);
+      if (entry) {
+        const tInp = entry.inputTokens || 0;
+        const tCa = entry.cacheTokens || 0;
+        today = {
+          totalTokens: entry.totalTokens || 0,
+          inputTokens: tInp,
+          cacheTokens: tCa,
+          outputTokens: entry.outputTokens || 0,
+          cacheHitRate: calcHitRateStr(tCa, tInp),
+          sessionCount: entry.count || 1
+        };
+      }
+    }
+    if (today && (today.totalTokens > 0 || today.sessionCount > 0)) {
+      const todayCost = calcCost(model, today.inputTokens || 0, today.cacheTokens || 0, today.outputTokens || 0);
+      if (el.valTodayTokens) el.valTodayTokens.textContent = formatTokens(today.totalTokens || 0);
+      if (el.valTodayCost) el.valTodayCost.innerHTML = formatInlineCost(model, todayCost);
+      if (el.subTodayDetail) {
+        el.subTodayDetail.textContent = `缓存命中 ${today.cacheHitRate}% · ${today.sessionCount || 1} 笔会话`;
+      }
+    } else {
+      if (el.valTodayTokens) el.valTodayTokens.textContent = '0';
+      if (el.valTodayCost) el.valTodayCost.innerHTML = formatInlineCost(model, 0);
+      if (el.subTodayDetail) el.subTodayDetail.textContent = '今日暂无交互记录';
     }
 
     // 计算并渲染近 7 天与近 14 天滚动数据
@@ -1434,9 +1500,11 @@
       return Number(toCnyCost(model, c).toFixed(2));
     });
 
-    el.trendChartTitle.textContent = data.mode === 'daily' 
-      ? `${data.displayName} 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
-      : `${data.displayName} 会话活跃分布与费用统计 (CNY ¥)`;
+    el.trendChartTitle.textContent = state.agent === 'all'
+      ? `全平台 Agent 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
+      : (data.mode === 'daily' 
+          ? `${data.displayName} 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
+          : `${data.displayName} 会话活跃分布与费用统计 (CNY ¥)`);
 
     state.trendChartInstance = new Chart(el.trendChartCanvas, {
       type: 'bar',
@@ -1606,8 +1674,9 @@
       ? calcCost(model, gs.inputTokens, gs.cacheTokens, gs.outputTokens)
       : (gs.costCny || 0);
 
+    // 1) 核心 KPI 全周期卡片
     el.valTotalTokens.textContent = formatTokens(gs.totalTokens);
-    el.subTotalTokens.textContent = `全平台 7 大 Agent 累计消耗`;
+    el.subTotalTokens.textContent = `全平台 ${allData.agents.length} 大 Agent 累计消耗`;
     el.valTotalCost.textContent = formatKpiMainCost(model, grandCost);
     el.valTotalCostUsd.textContent = formatKpiSubCost(model, grandCost);
 
@@ -1615,28 +1684,48 @@
     if (costBadge) costBadge.textContent = model.name;
     const costTitle = document.querySelector('.highlight-card .kpi-title');
     if (costTitle) costTitle.textContent = `${model.name} 等效费用`;
+
     const hitRate = (gs.cacheHitRate !== undefined && gs.cacheHitRate !== null)
       ? gs.cacheHitRate
       : (gs.inputTokens + gs.cacheTokens > 0 ? ((gs.cacheTokens / (gs.inputTokens + gs.cacheTokens)) * 100).toFixed(1) : '0.0');
     el.valCacheHitRate.textContent = `${hitRate}%`;
     el.barCacheHit.style.width = `${Math.min(100, Math.max(0, parseFloat(hitRate) || 0))}%`;
-    el.badgeActivePeriod.textContent = 'Agent 矩阵';
-    el.valActiveDays.textContent = `7 款支持`;
+
+    el.badgeActivePeriod.textContent = '活动日';
+    const activeDays = allData.activeDaysCount || (allData.dailyTrend ? allData.dailyTrend.length : 1);
+    el.valActiveDays.textContent = `${activeDays} 天`;
+    const dailyAvg = activeDays > 0 ? Math.round(gs.totalTokens / activeDays) : 0;
+    el.subActiveDays.textContent = `日均约 ${formatTokens(dailyAvg)}`;
+
     el.badgeRecordsType.textContent = '总会话数';
     el.valRecordsCount.textContent = `${gs.totalSessions} 笔`;
+    if (el.subRecordsDetail) el.subRecordsDetail.textContent = `共 ${allData.agents.length} 款 Agent 矩阵`;
 
-    // 全景概览下重置滚动卡片为综合/单 Agent 提示
-    if (el.val7DaysTokens) el.val7DaysTokens.textContent = '--';
-    if (el.val7DaysCost) el.val7DaysCost.textContent = '--';
-    if (el.val7DaysAvgTokens) el.val7DaysAvgTokens.textContent = '--';
-    if (el.val7DaysAvgCost) el.val7DaysAvgCost.textContent = '--';
-    if (el.val14DaysTokens) el.val14DaysTokens.textContent = '--';
-    if (el.val14DaysCost) el.val14DaysCost.textContent = '--';
-    if (el.val14DaysAvgTokens) el.val14DaysAvgTokens.textContent = '--';
-    if (el.val14DaysAvgCost) el.val14DaysAvgCost.textContent = '--';
+    // 2) 今日消耗指标卡片 (动态联动所选模型费率)
+    const today = allData.today || {};
+    const todayTokens = today.totalTokens || 0;
+    const todayCost = calcCost(model, today.inputTokens || 0, today.cacheTokens || 0, today.outputTokens || 0);
+    if (el.valTodayTokens) el.valTodayTokens.textContent = formatTokens(todayTokens);
+    if (el.valTodayCost) el.valTodayCost.innerHTML = formatInlineCost(model, todayCost);
+    if (el.subTodayDetail) {
+      el.subTodayDetail.textContent = todayTokens > 0
+        ? `缓存命中 ${today.cacheHitRate}% · ${today.activeAgentsCount || 0} 个活跃 Agent`
+        : `今日暂无交互记录`;
+    }
 
+    // 3) 过去 7 天 / 14 天滚动消耗指标卡片 (基于聚合的 dailyTrend 准确计算)
+    renderRollingKPIs(allData, model);
+
+    // 4) 柱状统计图表与饼图 (全景模式下直观展现全平台每日走向)
+    renderCharts(allData);
+
+    // 5) 渲染各 Agent 横向对比卡片
     let html = '';
-    allData.agents.forEach(a => {
+    let agentsList = [...allData.agents];
+    if (state.sort === 'tokens') {
+      agentsList.sort((a, b) => (b.totalTokens || 0) - (a.totalTokens || 0));
+    }
+    agentsList.forEach(a => {
       const aCost = (a.inputTokens !== undefined || a.cacheTokens !== undefined || a.outputTokens !== undefined)
         ? calcCost(model, a.inputTokens, a.cacheTokens, a.outputTokens)
         : (a.costCny || 0);
@@ -1676,7 +1765,7 @@
         <p>💡 点击上方任意 Agent 卡片可深入查看其精准每日账本与会话明细。</p>
       </div>
     `;
-    el.recordCounter.textContent = `共 ${allData.agents.length} 个 Agent`;
+    el.recordCounter.textContent = `共 ${allData.agents.length} 个 Agent 矩阵`;
   }
 
   // 4. 账本/项目列表渲染与过滤

@@ -27,7 +27,8 @@
       <div class="nav-center">
         <!-- Agent 药丸选择器 -->
         <div class="segmented-control" id="agentSelector">
-          <button class="segment-btn active" data-agent="agy">Google Antigravity</button>
+          <button class="segment-btn segment-all active" data-agent="all">🌟 全景对比</button>
+          <button class="segment-btn" data-agent="agy">Google Antigravity</button>
           <button class="segment-btn" data-agent="claude">Claude Code</button>
           <button class="segment-btn" data-agent="hermes">Hermes</button>
           <button class="segment-btn" data-agent="codex">Codex</button>
@@ -35,7 +36,6 @@
           <button class="segment-btn" data-agent="pi">Pi</button>
           <button class="segment-btn" data-agent="opencode">OpenCode</button>
           <button class="segment-btn" data-agent="workbuddy">WorkBuddy</button>
-          <button class="segment-btn segment-all" data-agent="all">🌟 全景对比</button>
         </div>
       </div>
 
@@ -60,7 +60,7 @@
               <span class="tab-icon">📅</span> 每日会话账本 (Daily)
             </button>
             <button class="tab-btn" data-mode="session">
-              <span class="tab-icon">🏆</span> 项目全生命周期总览 (Session)
+              <span class="tab-icon">🗂️</span> 项目会话详情 (Session)
             </button>
           </div>
           <!-- 计价模型下拉选择器 (支持管理模型、智能导入与记忆选择) -->
@@ -96,8 +96,9 @@
         </div>
       </div>
 
-      <!-- KPI 核心指标卡片 -->
+      <!-- KPI 核心指标卡片 (8 卡 4x2 黄金排版) -->
       <section class="kpi-grid">
+        <!-- 1. 全周期 Token -->
         <div class="kpi-card">
           <div class="kpi-header">
             <span class="kpi-title">总 Token 消耗</span>
@@ -107,6 +108,7 @@
           <div class="kpi-sub" id="subTotalTokens">Input: -- | Cache: -- | Output: --</div>
         </div>
 
+        <!-- 2. 等效费用 -->
         <div class="kpi-card highlight-card">
           <div class="kpi-header">
             <span class="kpi-title">DeepSeek-V4.1 等效费用</span>
@@ -116,6 +118,7 @@
           <div class="kpi-sub" id="valTotalCostUsd">约 $-- USD</div>
         </div>
 
+        <!-- 3. Cache 命中率 -->
         <div class="kpi-card">
           <div class="kpi-header">
             <span class="kpi-title">KV Cache 命中率</span>
@@ -127,6 +130,7 @@
           </div>
         </div>
 
+        <!-- 4. 活跃周期 -->
         <div class="kpi-card">
           <div class="kpi-header">
             <span class="kpi-title">活跃周期</span>
@@ -136,15 +140,20 @@
           <div class="kpi-sub" id="subActiveDays">日均用量: --</div>
         </div>
 
-        <div class="kpi-card">
+        <!-- 5. 今日消耗 (新增) -->
+        <div class="kpi-card highlight-today-card">
           <div class="kpi-header">
-            <span class="kpi-title">记录笔数</span>
-            <span class="kpi-badge badge-cyan" id="badgeRecordsType">会话</span>
+            <span class="kpi-title" id="titleTodayUsage">今日消耗</span>
+            <span class="kpi-badge badge-green" id="badgeToday">今日实时</span>
           </div>
-          <div class="kpi-value" id="valRecordsCount">--</div>
-          <div class="kpi-sub" id="subRecordsDetail">原生标题已自动映射</div>
+          <div class="kpi-value kpi-value-row">
+            <span id="valTodayTokens">--</span>
+            <span class="kpi-inline-cost cny-color" id="valTodayCost">--</span>
+          </div>
+          <div class="kpi-sub" id="subTodayDetail">Prompt 缓存率: --%</div>
         </div>
 
+        <!-- 6. 过去 7 天消耗 -->
         <div class="kpi-card">
           <div class="kpi-header">
             <span class="kpi-title">过去 7 天消耗</span>
@@ -157,6 +166,7 @@
           <div class="kpi-sub" id="sub7DaysDetail">日均约 <span id="val7DaysAvgTokens">--</span> · <span id="val7DaysAvgCost" class="cny-color">--</span>/天</div>
         </div>
 
+        <!-- 7. 过去 14 天消耗 -->
         <div class="kpi-card">
           <div class="kpi-header">
             <span class="kpi-title">过去 14 天消耗</span>
@@ -167,6 +177,16 @@
             <span class="kpi-inline-cost cny-color" id="val14DaysCost">--</span>
           </div>
           <div class="kpi-sub" id="sub14DaysDetail">日均约 <span id="val14DaysAvgTokens">--</span> · <span id="val14DaysAvgCost" class="cny-color">--</span>/天</div>
+        </div>
+
+        <!-- 8. 记录笔数 / 会话数 -->
+        <div class="kpi-card">
+          <div class="kpi-header">
+            <span class="kpi-title">记录笔数</span>
+            <span class="kpi-badge badge-cyan" id="badgeRecordsType">会话</span>
+          </div>
+          <div class="kpi-value" id="valRecordsCount">--</div>
+          <div class="kpi-sub" id="subRecordsDetail">原生标题已自动映射</div>
         </div>
       </section>
 

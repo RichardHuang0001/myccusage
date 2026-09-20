@@ -159,10 +159,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 # 显式刷新穿透失效对应缓存，使得下一步请求必须真实读取数据
                 DataCache.invalidate(agent)
                 if agent == "all":
-                    # 重新拉取所有 Agent 数据以生成总览
-                    for ag in SUPPORTED_AGENTS:
-                        get_daily_data(ag, force_refresh=True)
-                    res = get_all_agents_summary()
+                    # 重新并发拉取所有 Agent 数据以生成总览
+                    res = get_all_agents_summary(force_refresh=True)
                     DataCache.set(("all", "summary", False), res)
                 else:
                     # 单独刷新某个 Agent 的数据
