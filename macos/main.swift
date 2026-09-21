@@ -45,6 +45,33 @@ struct TodaySummary: Codable, Equatable {
     )
 }
 
+// MARK: - 通用短格式 Token 格式化（两位数只显示小数点后1位，3位数及以上不显示小数点后数字）
+func formatTokensShort(_ n: Int, fallback: String = "") -> String {
+    guard n > 0 else { return fallback.isEmpty ? "0" : fallback }
+    let val: Double
+    let unit: String
+    if n >= 1_000_000_000 {
+        val = Double(n) / 1_000_000_000.0
+        unit = "B"
+    } else if n >= 1_000_000 {
+        val = Double(n) / 1_000_000.0
+        unit = "M"
+    } else if n >= 1_000 {
+        val = Double(n) / 1_000.0
+        unit = "K"
+    } else {
+        return "\(n)"
+    }
+    
+    if val >= 99.95 {
+        return "\(Int(round(val)))\(unit)"
+    } else if val >= 9.95 {
+        return String(format: "%.1f%@", val, unit)
+    } else {
+        return unit == "K" ? String(format: "%.1fK", val) : String(format: "%.2f%@", val, unit)
+    }
+}
+
 // MARK: - 状态管理
 @MainActor
 class AppState: ObservableObject {
@@ -316,9 +343,9 @@ struct DockTileView: View {
                 .frame(width: 66, height: 5.5) // 宽度 66pt，高度 5.5pt，丰满纯粹
                 .padding(.top, 6)
                 
-                // 今日 Token 总量大字展示
-                Text(summary.displayTokens)
-                    .font(.system(size: summary.displayTokens.count > 5 ? 24 : (summary.displayTokens.count > 4 ? 27 : 30), weight: .heavy, design: .rounded))
+                // 今日 Token 总量大字展示（两位数只显示小数点后1位，3位数及以上不显示小数点后数字）
+                Text(dockDisplayTokens)
+                    .font(.system(size: dockDisplayTokens.count > 5 ? 24 : (dockDisplayTokens.count > 4 ? 27 : 30), weight: .heavy, design: .rounded))
                     .foregroundColor(.white)
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
@@ -327,6 +354,13 @@ struct DockTileView: View {
             .padding(10)
         }
         .frame(width: 128, height: 128)
+    }
+    
+    private var dockDisplayTokens: String {
+        if summary.totalTokens > 0 {
+            return formatTokensShort(summary.totalTokens, fallback: summary.displayTokens)
+        }
+        return summary.displayTokens
     }
 }
 

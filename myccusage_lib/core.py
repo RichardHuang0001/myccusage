@@ -1316,14 +1316,28 @@ _AGENT_TODAY_CACHE = {}  # aid -> { "fingerprint": str, "date": str, "data": dic
 _AGENT_TODAY_CACHE_LOCK = threading.Lock()
 
 def format_tokens_short(n):
-    """短格式化 Token 数，适合在微型 Dock 图标或气泡卡片中展示"""
+    """短格式化 Token 数，适合在微型 Dock 图标或气泡卡片中展示：
+    - 3位数 (>= 100): 不显示小数点后数字，例如 175M, 250K, 120B
+    - 两位数 (10 ~ 99): 只显示小数点后1位，例如 25.4M, 12.3K, 45.6B
+    - 1位数 (1 ~ 9): 显示小数点后2位 (M/B) 或 1位 (K)，例如 5.23M, 1.5K
+    """
     if not n or n <= 0:
         return "0"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.2f}M" if n < 10_000_000 else f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K" if n < 100_000 else f"{int(n / 1_000)}K"
-    return str(n)
+    if n >= 1_000_000_000:
+        val, unit = n / 1_000_000_000, "B"
+    elif n >= 1_000_000:
+        val, unit = n / 1_000_000, "M"
+    elif n >= 1_000:
+        val, unit = n / 1_000, "K"
+    else:
+        return str(n)
+
+    if val >= 99.95:
+        return f"{int(round(val))}{unit}"
+    elif val >= 9.95:
+        return f"{val:.1f}{unit}"
+    else:
+        return f"{val:.1f}K" if unit == "K" else f"{val:.2f}{unit}"
 
 def get_today_quick_summary(force_refresh=False):
     """
