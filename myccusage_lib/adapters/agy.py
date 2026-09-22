@@ -122,125 +122,191 @@ def extract_smart_title(req: str, default_title: str = "") -> str:
 
 
 class AntigravityAdapter(BaseAgentAdapter):
-    """Google Antigravity 100% 纯 Python 原生数据适配器"""
+    """Google Antigravity 100% 纯 Python 原生数据适配器 (支持 App + CLI + IDE 三大形态)"""
     agent_id = "agy"
     display_name = "Google Antigravity"
     has_times = False
 
     def __init__(self):
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.gemini/antigravity")
+        # 定义三大形态渠道: (标识, 基础目录, 标题protobuf文件, 标题后缀标签)
+        # APP 为主渠道默认无标签，非 APP 渠道分别追加 " (CLI)" 和 " (IDE)"
+        self.sources = [
+            ("app", os.path.expanduser("~/.gemini/antigravity"), "agyhub_summaries_proto.pb", ""),
+            ("cli", os.path.expanduser("~/.gemini/antigravity-cli"), "jetbox_summaries_proto.pb", " (CLI)"),
+            ("ide", os.path.expanduser("~/.gemini/antigravity-ide"), "agyhub_summaries_proto.pb", " (IDE)"),
+        ]
+        self.base_dir = self.sources[0][1]
         self.conv_dir = os.path.join(self.base_dir, "conversations")
         self.cache_dir = os.path.expanduser("~/.cache/myccusage")
 
     def is_available(self) -> bool:
-        """检测本地 Antigravity 目录或会话目录是否存在"""
-        return os.path.exists(self.base_dir) and (
-            os.path.exists(self.conv_dir) or os.path.exists(os.path.join(self.base_dir, "brain"))
-        )
+        """检测本地任何形态的 Antigravity 目录或会话目录是否存在"""
+        for _, base_dir, _, _ in self.sources:
+            if os.path.exists(base_dir) and (
+                os.path.exists(os.path.join(base_dir, "conversations")) or os.path.exists(os.path.join(base_dir, "brain"))
+            ):
+                return True
+        return False
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """
         提取 Antigravity 会话的原生纯净标题与最近活跃时间:
-        1. 优先从 agyhub_summaries_proto.pb 精准解码 Protobuf 结构，彻底剔除 varint 长度杂字符 (如 'i')
-        2. 若标题以冒号结尾或属于批量/子任务通用引导句，向下深度检索 transcript.jsonl 提取精确靶标
-        3. 兜底读取 brain/*/.system_generated/logs/transcript.jsonl
+        1. 遍历三大形态数据源 (App, CLI, IDE)
+        2. 结构化解码 protobuf 标题（agyhub_summaries_proto.pb / jetbox_summaries_proto.pb）
+        3. 从 brain transcript.jsonl 精确提炼子任务靶标标题
+        4. 从 conversation_summaries.db 兜底补充未命中的会话
+        5. 针对非 APP 渠道 (CLI / IDE) 统一追加对应的小括号后缀标记 " (CLI)" / " (IDE)"
         """
         titles = {}
         times = {}
         if not self.is_available():
             return titles, times
 
-        # 1. 结构化解码 agyhub_summaries_proto.pb
-        proto_path = os.path.join(self.base_dir, "agyhub_summaries_proto.pb")
-        if os.path.exists(proto_path):
-            try:
-                with open(proto_path, "rb") as f:
-                    data = f.read()
-                for fno, wire, val in parse_proto(data):
-                    if fno == 1 and wire == 2 and isinstance(val, bytes):
-                        entry = dict((sf[0], sf[2]) for sf in parse_proto(val))
-                        sid_raw = entry.get(1)
-                        sub2_raw = entry.get(2)
-                        if sid_raw and sub2_raw and isinstance(sub2_raw, bytes):
-                            sid = sid_raw.decode("utf-8", errors="ignore").strip()
-                            summary_flds = dict((sf[0], sf[2]) for sf in parse_proto(sub2_raw))
-                            title_raw = summary_flds.get(1)
-                            if title_raw and isinstance(title_raw, bytes):
-                                t = title_raw.decode("utf-8", errors="ignore").strip()
-                                if t and sid:
-                                    titles[sid] = t
-            except Exception:
-                pass
+        for channel, base_dir, proto_name, tag in self.sources:
+            if not os.path.isdir(base_dir):
+                continue
+            conv_dir = os.path.join(base_dir, "conversations")
 
-        # 2. 从 transcript.jsonl 中补充或精确细化子任务标题
-        logs_glob = os.path.join(self.base_dir, "brain/*/.system_generated/logs/transcript.jsonl")
-        for log_path in glob.glob(logs_glob):
-            parts = os.path.normpath(log_path).split(os.sep)
-            uid = ""
-            for idx, p in enumerate(parts):
-                if p == "brain" and idx + 1 < len(parts):
-                    uid = parts[idx + 1]
-                    break
-            if not uid and len(parts) >= 4:
-                uid = parts[-4]
-
-            existing_t = titles.get(uid, "")
-            needs_refinement = (
-                not existing_t
-                or existing_t.endswith(("：", ":"))
-                or "请为以下文件" in existing_t
-                or "需要注释的文件" in existing_t
-                or "请执行以下" in existing_t
-                or len(existing_t) < 4
-            )
-
-            if uid and needs_refinement:
+            channel_sids = set()
+            if os.path.isdir(conv_dir):
                 try:
-                    with open(log_path, "r", encoding="utf-8") as f:
-                        first_line = f.readline()
-                        if first_line:
-                            import json
-                            obj = json.loads(first_line)
-                            content = obj.get("content", "")
-                            if "<USER_REQUEST>" in content:
-                                req = content.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0].strip()
-                            else:
-                                req = content.strip()
-                            smart_t = extract_smart_title(req, default_title=existing_t)
-                            if smart_t:
-                                titles[uid] = smart_t
+                    with os.scandir(conv_dir) as it:
+                        for entry in it:
+                            if entry.name.endswith(".db"):
+                                channel_sids.add(entry.name[:-3])
+                except OSError:
+                    pass
+
+            channel_titles = {}
+
+            # 1. 结构化解码 Protobuf 标题摘要
+            proto_path = os.path.join(base_dir, proto_name)
+            if os.path.exists(proto_path):
+                try:
+                    with open(proto_path, "rb") as f:
+                        data = f.read()
+                    for fno, wire, val in parse_proto(data):
+                        if fno == 1 and wire == 2 and isinstance(val, bytes):
+                            entry = dict((sf[0], sf[2]) for sf in parse_proto(val))
+                            sid_raw = entry.get(1)
+                            sub2_raw = entry.get(2)
+                            if sid_raw and sub2_raw and isinstance(sub2_raw, bytes):
+                                sid = sid_raw.decode("utf-8", errors="ignore").strip()
+                                summary_flds = dict((sf[0], sf[2]) for sf in parse_proto(sub2_raw))
+                                title_raw = summary_flds.get(1)
+                                if title_raw and isinstance(title_raw, bytes):
+                                    t = title_raw.decode("utf-8", errors="ignore").strip()
+                                    if t and sid:
+                                        channel_titles[sid] = t
                 except Exception:
                     pass
+
+            # 2. 从 transcript.jsonl 补充或精确细化子任务标题
+            logs_glob = os.path.join(base_dir, "brain/*/.system_generated/logs/transcript.jsonl")
+            for log_path in glob.glob(logs_glob):
+                parts = os.path.normpath(log_path).split(os.sep)
+                uid = ""
+                for idx, p in enumerate(parts):
+                    if p == "brain" and idx + 1 < len(parts):
+                        uid = parts[idx + 1]
+                        break
+                if not uid and len(parts) >= 4:
+                    uid = parts[-4]
+
+                existing_t = channel_titles.get(uid, "")
+                needs_refinement = (
+                    not existing_t
+                    or existing_t.endswith(("：", ":"))
+                    or "请为以下文件" in existing_t
+                    or "需要注释的文件" in existing_t
+                    or "请执行以下" in existing_t
+                    or len(existing_t) < 4
+                )
+
+                if uid and needs_refinement:
+                    try:
+                        with open(log_path, "r", encoding="utf-8") as f:
+                            first_line = f.readline()
+                            if first_line:
+                                import json
+                                obj = json.loads(first_line)
+                                content = obj.get("content", "")
+                                if "<USER_REQUEST>" in content:
+                                    req = content.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0].strip()
+                                else:
+                                    req = content.strip()
+                                smart_t = extract_smart_title(req, default_title=existing_t)
+                                if smart_t:
+                                    channel_titles[uid] = smart_t
+                    except Exception:
+                        pass
+
+            # 3. 从 conversation_summaries.db 兜底补充
+            missing_sids = [sid for sid in channel_sids if sid not in channel_titles or not channel_titles[sid]]
+            if missing_sids:
+                conv_sum_db = os.path.join(base_dir, "conversation_summaries.db")
+                if os.path.exists(conv_sum_db):
+                    try:
+                        conn = sqlite3.connect(f"file:{conv_sum_db}?mode=ro", uri=True, timeout=1.0)
+                        c = conn.cursor()
+                        for msid in missing_sids:
+                            c.execute("SELECT title, preview FROM conversation_summaries WHERE conversation_id = ?", (msid,))
+                            row = c.fetchone()
+                            if row:
+                                t = (row[0] or "").strip()
+                                if not t and row[1] and row[1].strip():
+                                    t = extract_smart_title(row[1].strip())
+                                if t:
+                                    channel_titles[msid] = t
+                        conn.close()
+                    except Exception:
+                        pass
+
+            # 4. 针对非 APP 渠道打上小括号后缀标记 (CLI) / (IDE)
+            for sid, t in channel_titles.items():
+                if tag and not t.endswith(tag):
+                    titles[sid] = f"{t}{tag}"
+                else:
+                    titles[sid] = t
+
+            if tag:
+                for sid in channel_sids:
+                    if sid not in titles:
+                        titles[sid] = f"（未命名会话）{tag}"
 
         return titles, times
 
 
     def get_source_fingerprint(self) -> str:
-        """极速获取 conversations 目录下数据库文件的修改状态指纹 (< 1ms)"""
+        """极速获取三大形态 conversations 目录下数据库文件的修改状态指纹 (< 1ms)"""
         if not self.is_available():
             return ""
         max_mtime = 0
         file_count = 0
-        try:
-            with os.scandir(self.conv_dir) as it:
-                for entry in it:
-                    if entry.name.endswith(".db"):
-                        file_count += 1
-                        try:
-                            mt = entry.stat().st_mtime_ns
-                            if mt > max_mtime:
-                                max_mtime = mt
-                        except OSError:
-                            pass
-        except OSError:
-            return ""
+        for _, base_dir, _, _ in self.sources:
+            conv_dir = os.path.join(base_dir, "conversations")
+            if not os.path.isdir(conv_dir):
+                continue
+            try:
+                with os.scandir(conv_dir) as it:
+                    for entry in it:
+                        if entry.name.endswith(".db"):
+                            file_count += 1
+                            try:
+                                mt = entry.stat().st_mtime_ns
+                                if mt > max_mtime:
+                                    max_mtime = mt
+                            except OSError:
+                                pass
+            except OSError:
+                pass
         return f"{file_count}:{max_mtime}"
 
     def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         100% 纯原生提取 Antigravity 消费数据:
-        - 直连 ~/.gemini/antigravity/conversations/*.db (只读模式，不争抢写锁)
+        - 聚合直连 App、CLI、IDE 三大形态 conversations/*.db (只读模式，不争抢写锁)
         - 支持 today_only: 仅扫描今日凌晨以后修改的热文件 (性能提速 50x)
         - 遍历 steps 表中 step_type = 15 的模型输出轮次
         - 利用内置 Protobuf Varint 解码器解析 Field 1 (时间戳) 与 Field 9 (Token用量)
@@ -261,7 +327,12 @@ class AntigravityAdapter(BaseAgentAdapter):
         daily_map = {}
         session_map = {}
 
-        db_files = scan_files_fast(self.conv_dir, extensions=(".db",), recursive=False, today_only=today_only)
+        conv_dirs = [
+            os.path.join(b, "conversations")
+            for _, b, _, _ in self.sources
+            if os.path.isdir(os.path.join(b, "conversations"))
+        ]
+        db_files = scan_files_fast(conv_dirs, extensions=(".db",), recursive=False, today_only=today_only)
 
         with self._lock:
             if not self._file_cache:

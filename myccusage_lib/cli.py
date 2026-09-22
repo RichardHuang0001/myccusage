@@ -451,7 +451,7 @@ def print_usage_hint():
     print("  myccusage <agent参数> [模式选项] [排序选项]")
     print("  myccusage --web [--port <端口>]         # 启动网页前端仪表盘\n")
     print("支持的 Agent 参数:")
-    print("  --agy, --antigravity    统计 Google Antigravity (App + CLI)")
+    print("  --agy, --antigravity    统计 Google Antigravity (App + CLI + IDE)")
     print("  --claude                统计 Claude Code")
     print("  --hermes                统计 Hermes Agent")
     print("  --codex                 统计 OpenAI Codex")
