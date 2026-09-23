@@ -257,7 +257,43 @@
           <span>🌟 全 AI 编程 Agent 用量与支出分布</span>
         </div>
         <div class="agents-overview-grid" id="agentsOverviewGrid">
-          <!-- 动态渲染 7 大 Agent 卡片 -->
+          <!-- 动态渲染 8 大 Agent 卡片 -->
+        </div>
+      </section>
+
+      <!-- 全局多 Agent 每日用量竞赛折线图 (仅在全景对比模式呈现) -->
+      <section class="chart-card race-chart-card" id="raceChartSection" style="display: none;">
+        <div class="chart-card-header race-chart-header">
+          <div class="chart-title">
+            <span class="chart-icon">🏁</span>
+            <span id="raceChartTitle">全 Agent 每日用量竞赛走势</span>
+            <span class="race-chart-sub">横轴活跃日期 · 纵轴当日消耗 · 悬停查看排名对比 · 点击图例高亮单线</span>
+          </div>
+          <div class="race-chart-actions">
+            <div class="race-range-selector" id="raceRangeSelector">
+              <button class="race-range-btn" data-range="14">近 14 天</button>
+              <button class="race-range-btn active" data-range="30">近 30 天</button>
+              <button class="race-range-btn" data-range="all">全部历史</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 交互式 Agent 图例：支持点击单独高亮/聚焦某 Agent -->
+        <div class="race-legend-bar" id="raceLegendBar">
+          <!-- 动态渲染各 Agent 徽章与彩色指示点 -->
+        </div>
+
+        <div class="chart-body race-chart-body">
+          <!-- 固定左侧 Token Y 轴刻度 -->
+          <div class="trend-y-axis trend-y-axis-left" id="raceYAxisLeft"></div>
+
+          <!-- 小组件内部的横移主视口 -->
+          <div class="trend-scroll-viewport" id="raceScrollViewport">
+            <div class="trend-scroll-canvas-wrap" id="raceScrollCanvasWrap">
+              <canvas id="raceChartCanvas"></canvas>
+            </div>
+            <div id="raceChartFallback" class="chart-fallback" style="display: none;">暂无时序数据</div>
+          </div>
         </div>
       </section>
 

@@ -1745,3 +1745,149 @@ body.light-theme .navbar {
   font-weight: 600;
   color: var(--text-primary);
 }
+
+/* ==========================================================================
+   多 Agent 每日用量竞赛折线图 (Multi-Agent Competition Line Chart)
+   ========================================================================== */
+
+.race-chart-card {
+  margin-top: 20px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+.race-chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.race-chart-sub {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-weight: normal;
+  margin-top: 4px;
+}
+
+.race-chart-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.race-range-selector {
+  display: inline-flex;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.race-range-btn {
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-weight: 500;
+}
+
+.race-range-btn:hover {
+  color: var(--text-primary);
+}
+
+.race-range-btn.active {
+  background-color: var(--accent-blue);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* 交互式图例胶囊列表 */
+.race-legend-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.race-legend-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.race-legend-pill:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-1px);
+}
+
+.race-legend-pill.highlighted {
+  color: var(--text-primary);
+  border-color: currentColor;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.15);
+  font-weight: 600;
+}
+
+.race-legend-pill.dimmed {
+  opacity: 0.35;
+  filter: grayscale(0.5);
+}
+
+.race-legend-pill.hidden {
+  opacity: 0.25;
+  text-decoration: line-through;
+}
+
+.race-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.race-legend-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  opacity: 0.8;
+  margin-left: 2px;
+}
+
+.race-chart-body {
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 320px;
+  overflow: hidden;
+}
+

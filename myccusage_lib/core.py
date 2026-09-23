@@ -1237,7 +1237,8 @@ def get_all_agents_summary(force_refresh=False):
                     "inputTokens": 0,
                     "cacheTokens": 0,
                     "outputTokens": 0,
-                    "costCny": 0.0
+                    "costCny": 0.0,
+                    "agentTokens": {}
                 }
             cur = daily_trend_by_date[d_str]
             cur["totalTokens"] += d.get("totalTokens", 0)
@@ -1245,6 +1246,9 @@ def get_all_agents_summary(force_refresh=False):
             cur["cacheTokens"] += d.get("cacheTokens", 0)
             cur["outputTokens"] += d.get("outputTokens", 0)
             cur["costCny"] += d.get("costCny", 0.0)
+            if "agentTokens" not in cur:
+                cur["agentTokens"] = {}
+            cur["agentTokens"][aid] = d.get("totalTokens", 0)
 
             if d_str == today_str and d.get("totalTokens", 0) > 0:
                 today_active_agents.add(aid)

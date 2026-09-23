@@ -202,7 +202,11 @@
     allAgentsData: null,
     trendChartInstance: null,
     donutChartInstance: null,
-    isDarkTheme: true
+    isDarkTheme: true,
+    raceRange: '30',
+    highlightedAgent: null,
+    hiddenAgents: new Set(),
+    raceChartInstance: null
   };
 
   // DOM 元素缓存
@@ -264,6 +268,15 @@
     chartsSection: document.getElementById('chartsSection'),
     allAgentsSection: document.getElementById('allAgentsSection'),
     agentsOverviewGrid: document.getElementById('agentsOverviewGrid'),
+    tableSection: document.getElementById('tableSection'),
+    raceChartSection: document.getElementById('raceChartSection'),
+    raceChartCanvas: document.getElementById('raceChartCanvas'),
+    raceYAxisLeft: document.getElementById('raceYAxisLeft'),
+    raceScrollViewport: document.getElementById('raceScrollViewport'),
+    raceScrollCanvasWrap: document.getElementById('raceScrollCanvasWrap'),
+    raceLegendBar: document.getElementById('raceLegendBar'),
+    raceRangeSelector: document.getElementById('raceRangeSelector'),
+    raceChartFallback: document.getElementById('raceChartFallback'),
     ledgerContainer: document.getElementById('ledgerContainer'),
     toast: document.getElementById('toast'),
 
@@ -1277,12 +1290,57 @@
       });
     }
 
+    // 竞赛折线图时间范围切换
+    if (el.raceRangeSelector) {
+      el.raceRangeSelector.querySelectorAll('.race-range-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          el.raceRangeSelector.querySelectorAll('.race-range-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.raceRange = btn.getAttribute('data-range') || '30';
+          if (state.allAgentsData) {
+            renderRaceChart(state.allAgentsData);
+          }
+        });
+      });
+    }
+
+    // 竞赛折线图内部横滑鼠标拖拽
+    if (el.raceScrollViewport) {
+      let isRaceMouseDown = false;
+      let startRaceMouseX = 0;
+      let startRaceScrollLeft = 0;
+
+      el.raceScrollViewport.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isRaceMouseDown = true;
+        el.raceScrollViewport.classList.add('grabbing');
+        startRaceMouseX = e.pageX - el.raceScrollViewport.offsetLeft;
+        startRaceScrollLeft = el.raceScrollViewport.scrollLeft;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isRaceMouseDown) {
+          isRaceMouseDown = false;
+          if (el.raceScrollViewport) el.raceScrollViewport.classList.remove('grabbing');
+        }
+      });
+
+      el.raceScrollViewport.addEventListener('mousemove', (e) => {
+        if (!isRaceMouseDown) return;
+        e.preventDefault();
+        const currentX = e.pageX - el.raceScrollViewport.offsetLeft;
+        const walk = (currentX - startRaceMouseX) * 1.5;
+        el.raceScrollViewport.scrollLeft = startRaceScrollLeft - walk;
+      });
+    }
+
     // 窗口尺寸变化自适应重绘
     window.addEventListener('resize', () => {
       clearTimeout(window._trendResizeTimer);
       window._trendResizeTimer = setTimeout(() => {
         if (state.agent === 'all' && state.allAgentsData) {
           renderCharts(state.allAgentsData);
+          renderRaceChart(state.allAgentsData);
         } else if (state.data) {
           renderCharts(state.data);
         }
@@ -1306,6 +1364,7 @@
     // 重新渲染图表以应用主题颜色
     if (state.agent === 'all' && state.allAgentsData) {
       renderCharts(state.allAgentsData);
+      renderRaceChart(state.allAgentsData);
     } else if (state.data) {
       renderCharts(state.data);
     }
@@ -1321,9 +1380,11 @@
     `;
 
     if (state.agent === 'all') {
-      // 全景模式：图表区与各 Agent 对比卡片区全部显示
+      // 全景模式：图表区与各 Agent 对比卡片区全部显示，展开竞赛折线图，隐藏单 Agent 会话账本区
       el.chartsSection.style.display = 'grid';
       el.allAgentsSection.style.display = 'block';
+      if (el.raceChartSection) el.raceChartSection.style.display = 'block';
+      if (el.tableSection) el.tableSection.style.display = 'none';
       if (el.modeSelector) el.modeSelector.style.display = 'none';
       try {
         const res = await fetch('/api/all');
@@ -1340,6 +1401,8 @@
     if (el.modeSelector) el.modeSelector.style.display = 'flex';
     el.chartsSection.style.display = 'grid';
     el.allAgentsSection.style.display = 'none';
+    if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+    if (el.tableSection) el.tableSection.style.display = 'block';
 
     try {
       const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}`;
@@ -1826,6 +1889,246 @@
     `;
   }
 
+  // ==========================================================================
+  // 多 Agent 每日用量竞赛折线图 (Multi-Agent Competition Line Chart)
+  // ==========================================================================
+
+  const AGENT_COLORS = {
+    agy: { stroke: '#4285f4', bg: 'rgba(66, 133, 244, 0.15)', name: 'Google Antigravity' },
+    claude: { stroke: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)', name: 'Claude Code' },
+    hermes: { stroke: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', name: 'Hermes Agent' },
+    codex: { stroke: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)', name: 'OpenAI Codex' },
+    grok: { stroke: '#ec4899', bg: 'rgba(236, 72, 153, 0.15)', name: 'Grok' },
+    pi: { stroke: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.15)', name: 'Pi Agent' },
+    opencode: { stroke: '#6366f1', bg: 'rgba(99, 102, 241, 0.15)', name: 'OpenCode' },
+    workbuddy: { stroke: '#f43f5e', bg: 'rgba(244, 63, 94, 0.15)', name: 'WorkBuddy' },
+  };
+
+  function renderRaceYAxisOverlays(chartInstance) {
+    const chart = chartInstance || state.raceChartInstance;
+    if (!chart || !chart.scales) return;
+    const yScale = chart.scales.y;
+    if (!yScale) return;
+
+    if (el.raceYAxisLeft && Array.isArray(yScale.ticks)) {
+      let leftHtml = '';
+      yScale.ticks.forEach(t => {
+        const px = yScale.getPixelForValue(t.value);
+        if (typeof px === 'number' && !isNaN(px)) {
+          leftHtml += `<span class="y-axis-label y-axis-label-left" style="top:${px}px;">${formatTokens(t.value)}</span>`;
+        }
+      });
+      el.raceYAxisLeft.innerHTML = leftHtml;
+    }
+  }
+
+  function renderRaceLegend(allData) {
+    if (!el.raceLegendBar) return;
+    const agents = allData.agents || [];
+    let html = '';
+    agents.forEach(a => {
+      const col = AGENT_COLORS[a.id] || { stroke: '#94a3b8' };
+      const isDimmed = state.highlightedAgent && state.highlightedAgent !== a.id;
+      const isHighlighted = state.highlightedAgent === a.id;
+      const isHidden = state.hiddenAgents && state.hiddenAgents.has(a.id);
+
+      let classes = 'race-legend-pill';
+      if (isHighlighted) classes += ' highlighted';
+      if (isDimmed) classes += ' dimmed';
+      if (isHidden) classes += ' hidden';
+
+      html += `
+        <div class="${classes}" data-agent="${a.id}" title="点击聚焦高亮 ${a.name} 折线，再次点击取消">
+          <span class="race-legend-dot" style="background-color: ${col.stroke};"></span>
+          <span>${a.name}</span>
+          <span class="race-legend-val">${formatTokens(a.totalTokens)}</span>
+        </div>
+      `;
+    });
+
+    if (state.highlightedAgent || (state.hiddenAgents && state.hiddenAgents.size > 0)) {
+      html += `
+        <div class="race-legend-pill btn-reset-race-legend" style="border-style: dashed; color: var(--accent-blue);" title="还原所有折线">
+          <span>↺ 还原全部</span>
+        </div>
+      `;
+    }
+
+    el.raceLegendBar.innerHTML = html;
+
+    el.raceLegendBar.querySelectorAll('.race-legend-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        if (pill.classList.contains('btn-reset-race-legend')) {
+          state.highlightedAgent = null;
+          state.hiddenAgents.clear();
+          renderRaceChart(allData);
+          return;
+        }
+        const aid = pill.getAttribute('data-agent');
+        if (state.highlightedAgent === aid) {
+          state.highlightedAgent = null;
+        } else {
+          state.highlightedAgent = aid;
+        }
+        renderRaceChart(allData);
+      });
+    });
+  }
+
+  function renderRaceChart(allData) {
+    if (!allData || !allData.dailyTrend || typeof Chart === 'undefined') return;
+
+    renderRaceLegend(allData);
+
+    const isDark = state.isDarkTheme;
+    const gridColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)';
+    const textColor = isDark ? '#9ca3af' : '#475569';
+
+    if (state.raceChartInstance) {
+      state.raceChartInstance.destroy();
+      state.raceChartInstance = null;
+    }
+
+    let trend = allData.dailyTrend || [];
+    if (state.raceRange === '14') {
+      trend = trend.slice(-14);
+    } else if (state.raceRange === '30') {
+      trend = trend.slice(-30);
+    }
+    const totalDays = trend.length;
+    const labels = trend.map(t => t.date.slice(5) + `(${t.weekday})`);
+
+    const viewportWidth = (el.raceScrollViewport && el.raceScrollViewport.clientWidth > 0)
+      ? el.raceScrollViewport.clientWidth
+      : 600;
+
+    if (totalDays > 30) {
+      const dayWidth = Math.max(34, Math.floor(viewportWidth / 30));
+      const totalWidth = Math.round(totalDays * dayWidth);
+      if (el.raceScrollCanvasWrap) {
+        el.raceScrollCanvasWrap.style.width = `${totalWidth}px`;
+      }
+    } else {
+      if (el.raceScrollCanvasWrap) {
+        el.raceScrollCanvasWrap.style.width = '100%';
+      }
+    }
+
+    const agents = allData.agents || [];
+    const datasets = [];
+
+    agents.forEach(a => {
+      if (state.hiddenAgents && state.hiddenAgents.has(a.id)) return;
+      const col = AGENT_COLORS[a.id] || { stroke: '#94a3b8', bg: 'rgba(148, 163, 184, 0.15)' };
+      const isHighlighted = state.highlightedAgent === a.id;
+      const isDimmed = state.highlightedAgent && state.highlightedAgent !== a.id;
+
+      const lineData = trend.map(t => (t.agentTokens && t.agentTokens[a.id]) || 0);
+
+      datasets.push({
+        label: a.name,
+        agentId: a.id,
+        data: lineData,
+        borderColor: isDimmed ? 'rgba(156, 163, 175, 0.22)' : col.stroke,
+        backgroundColor: col.bg,
+        borderWidth: isHighlighted ? 3.5 : (isDimmed ? 1.0 : 2.2),
+        pointBackgroundColor: isDimmed ? 'rgba(156, 163, 175, 0.22)' : col.stroke,
+        pointBorderColor: isDark ? '#1e293b' : '#ffffff',
+        pointBorderWidth: 1.5,
+        pointRadius: isHighlighted ? 4.5 : (isDimmed ? 1.0 : 3),
+        pointHoverRadius: 6,
+        tension: 0.25,
+        fill: false,
+        order: isHighlighted ? 1 : 10
+      });
+    });
+
+    const syncRaceYAxisPlugin = {
+      id: 'syncRaceYAxisOverlays',
+      afterLayout: (chart) => {
+        renderRaceYAxisOverlays(chart);
+      }
+    };
+
+    state.raceChartInstance = new Chart(el.raceChartCanvas, {
+      type: 'line',
+      plugins: [syncRaceYAxisPlugin],
+      data: {
+        labels: labels,
+        datasets: datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 300 },
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+            titleColor: isDark ? '#f8fafc' : '#0f172a',
+            bodyColor: isDark ? '#cbd5e1' : '#334155',
+            borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+            borderWidth: 1,
+            padding: 12,
+            boxPadding: 6,
+            usePointStyle: true,
+            itemSort: (a, b) => (b.raw || 0) - (a.raw || 0),
+            callbacks: {
+              title: function (items) {
+                if (!items.length) return '';
+                const idx = items[0].dataIndex;
+                const d = trend[idx];
+                return d ? `📅 ${d.date} (${d.weekday})` : items[0].label;
+              },
+              label: function (ctx) {
+                const val = ctx.raw || 0;
+                if (val <= 0 && state.highlightedAgent !== ctx.dataset.agentId) {
+                  return null;
+                }
+                return ` ${ctx.dataset.label}: ${formatTokens(val)}`;
+              },
+              footer: function (items) {
+                const activeItems = items.filter(it => (it.raw || 0) > 0);
+                const total = activeItems.reduce((acc, c) => acc + (c.raw || 0), 0);
+                return total > 0 ? `当日全平台总计: ${formatTokens(total)}` : '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: {
+              color: textColor,
+              font: { size: 10 }
+            }
+          },
+          y: {
+            position: 'left',
+            grid: { color: gridColor },
+            ticks: {
+              display: false,
+              font: { size: 10 }
+            }
+          }
+        }
+      }
+    });
+
+    if (totalDays > 30 && el.raceScrollViewport) {
+      setTimeout(() => {
+        if (el.raceScrollViewport) {
+          const maxScroll = el.raceScrollViewport.scrollWidth - el.raceScrollViewport.clientWidth;
+          el.raceScrollViewport.scrollLeft = maxScroll;
+        }
+      }, 50);
+    }
+  }
+
   // 3. 全景对比视图渲染
   function renderAllAgentsOverview(allData) {
     const gs = allData.grandSummary;
@@ -1926,6 +2229,9 @@
       </div>
     `;
     el.recordCounter.textContent = `共 ${allData.agents.length} 个 Agent 矩阵`;
+
+    // 6) 渲染多 Agent 每日用量竞赛折线图
+    renderRaceChart(allData);
   }
 
   // 4. 账本/项目列表渲染与过滤
