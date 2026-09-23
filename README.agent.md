@@ -21,7 +21,7 @@
   - [3.1 新增一个全新 Agent 适配](#31-新增一个全新-agent-适配)
   - [3.2 增加或更新预设计价模型](#32-增加或更新预设计价模型)
   - [3.3 缓存清理与调试技巧](#33-缓存清理与调试技巧)
-  - [3.4 版本发布与 PyPI 发版自动化流程](#34-版本发布与-pypi-发版自动化流程)
+  - [3.4 版本发布与 PyPI 发版流程（完整可执行清单见 docs/发版指引.md）](#34-版本发布与-pypi-发版自动化流程)
 
 ---
 
@@ -151,7 +151,7 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 myccusage/
 ├── myccusage.py                 # CLI 辅助脚本入口，处理软链接并委托 cli.py
 ├── myccusage_lib/
-│   ├── __init__.py             # 版本号与元数据定义 (__version__ = "1.4.0")
+│   ├── __init__.py             # 版本号与元数据定义 (__version__)
 │   ├── __main__.py             # 支持 python3 -m myccusage_lib 模块级运行
 │   ├── adapters/               # 原生高性能 Agent 适配器体系 (Zero ccusage dependency)
 │   │   ├── base.py             # 适配器抽象基类、时间戳转换与 fast_scandir 工具
@@ -178,8 +178,8 @@ myccusage/
 │           ├── style.css       # 响应式玻璃拟态暗色/亮色样式
 │           └── app.js          # 原生 JavaScript 状态流、动态全站重算、Chart.js
 ├── macos/                      # 兼容入口转发壳 (build_app.sh 转发到 myccusage_lib/macos/，不持有源码副本)
-├── scripts/                    # 维护与媒体生成辅助工具 (如 generate_cover.py)
-├── docs/                       # 预览截图与媒体资源 (images/)
+├── scripts/                    # 维护辅助工具 (媒体生成、同步分片来源清洗等)
+├── docs/                       # 预览截图与媒体资源 (images/)、发版指引 (发版指引.md)
 ├── README.md                   # 中文主文档 (含 myccusage dock 快速使用)
 ├── README.en.md                # 英文主文档
 ├── README.agent.md             # 面向 AI Agent 与系统维护者的工程架构指南 (本文档)
@@ -346,9 +346,13 @@ myccusage/
 
 本项目已配置 GitHub Actions 自动化发布流水线（`.github/workflows/publish.yml`）：
 
-1. **版本号对齐**（确保两处严格一致）：
-   - `myccusage_lib/__init__.py`: `__version__ = "X.Y.Z"`
+1. **版本号对齐**（共 5 处，必须全部一致）：
    - `pyproject.toml`: `version = "X.Y.Z"`
+   - `myccusage_lib/__init__.py`: `__version__ = "X.Y.Z"`
+   - `myccusage_lib/macos/build_app.sh`: `CFBundleShortVersionString` 与 `CFBundleVersion`
+   - `myccusage_lib/web/static/index.html`: 页脚 `myccusage vX.Y.Z`
+
+   > ⚠️ 完整发版流程（质量门清单、CI 流水线逐条说明、发版后落地校验、异常与回滚处理）见 **`docs/发版指引.md`**，以该文件为准。
 2. **本地预构建与校验**：
    ```bash
    python3 -m build
