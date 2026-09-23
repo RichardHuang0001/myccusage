@@ -943,7 +943,9 @@
       if (el.syncModal && el.syncModal.style.display !== 'none') {
         openSyncModal();
       }
-      await loadData(true); // forceRefresh — 强制绕过缓存，刷新同步后数据
+      // 用项目原生 /api/refresh 强制穿透服务端缓存重算，再渲染最新数据
+      try { await fetch(`/api/refresh?agent=${state.agent === 'all' ? 'all' : state.agent}`, { method: 'POST' }); } catch (_) {}
+      await loadData();
     } catch (err) {
       updateSyncStep('finish', 'error', '同步异常失败', err.message);
       showToast(`❌ 同步失败: ${err.message}`);
@@ -1844,7 +1846,7 @@
   }
 
   // 数据拉取与渲染
-  async function loadData(forceRefresh = false) {
+  async function loadData() {
     el.ledgerContainer.innerHTML = `
       <div class="loading-state">
         <div class="spinner"></div>
@@ -1860,7 +1862,7 @@
       if (el.tableSection) el.tableSection.style.display = 'none';
       if (el.modeSelector) el.modeSelector.style.display = 'none';
       try {
-        const res = await fetch(forceRefresh ? `/api/all?_t=${Date.now()}` : '/api/all');
+        const res = await fetch('/api/all');
         const json = await res.json();
         state.allAgentsData = json;
         state.data = json;
@@ -1878,7 +1880,7 @@
     if (el.tableSection) el.tableSection.style.display = 'block';
 
     try {
-      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}${forceRefresh ? `&_t=${Date.now()}` : ''}`;
+      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}`;
       const res = await fetch(url);
       const json = await res.json();
 
