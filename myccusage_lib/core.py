@@ -21,7 +21,7 @@ import concurrent.futures
 from datetime import datetime, timezone
 from collections import OrderedDict
 from .adapters import ADAPTERS, get_adapter
-from .sync import get_remote_agent_data
+from .sync import get_remote_agent_data, get_remote_fingerprint, get_remote_agent_ids
 
 # 星期常量映射
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
@@ -720,12 +720,19 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
         if adapter:
             # 原生适配器：直接使用由文件级 mtime 缓存精准保障的 native_daily_map
             # 彻底杜绝旧按日缓存导致的会话唤醒迟滞或数据陈旧问题
+            #
+            # 【关键不变式】适配器的 _full_cache 必须视为只读！
+            # 这里必须先浅拷贝列表，并且只在真要改写 lastActivity 时才拷贝字典。
+            # 否则下一步的异机数据 append 会直接写进适配器缓存对象，进而被
+            # export_local_snapshot() 以"本机数据"的名义写进 Git 分片并永久固化。
             for d in active_days:
-                s_list = native_daily_map.get(d, [])
-                for s in s_list:
+                s_list = list(native_daily_map.get(d, []))
+                for i, s in enumerate(s_list):
                     sid = s.get("sessionId")
                     if not s.get("lastActivity") and sid in times_override:
+                        s = dict(s)
                         s["lastActivity"] = times_override[sid]
+                        s_list[i] = s
                 day_sessions_map[d] = s_list
         else:
             # 2. 外部回退模式：读取/写入本地日期缓存 (避免全量子进程开销)
@@ -1375,34 +1382,47 @@ def format_tokens_short(n):
 
 def get_today_quick_summary(force_refresh=False):
     """
-    极速获取今日各 Agent 的 Token 吞吐与概况：
-    - 带单 Agent 粒度状态指纹预检：若数据源未发生改动且在同一天内，0.01ms 瞬时返回
+    极速获取今日各 Agent 的 Token 吞吐与概况（含多端异机数据融合）：
+    - 双指纹预检：本机数据源指纹 + 异机分片指纹共同构成缓存键，
+      同一天内且两端均无变化时 0.01ms 瞬时返回；异机账本一变即立刻穿透缓存
     - 差异化智能调度：仅对指纹发生变动的 Agent 触发并发提取 (today_only=True)
     - 结合今日热文件快速剪枝，相比全盘扫描性能提速 50x~600x
+    - 异机今日切片来自 load_remote_devices_data() 的内存级并集缓存（未开启同步时短路 < 0.005ms），
+      因此本接口与 Web 端 /api/data、/api/all 共用同一份跨端口径，程序屋不再落后于 Web 看板
     """
     global _TODAY_CACHE, _AGENT_TODAY_CACHE
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     # 1. 快速提取各 Agent 当前的轻量级指纹 (< 5ms)
-    current_fps = {}
+    #    异机分片指纹一并纳入缓存键：保证远端同步完成后本机摘要立即失效重算
+    remote_fp = get_remote_fingerprint()
+    base_fps = {}
     for aid, ad in ADAPTERS.items():
         if ad and ad.is_available():
             try:
-                current_fps[aid] = ad.get_source_fingerprint()
+                local_fp = ad.get_source_fingerprint()
             except Exception:
-                current_fps[aid] = ""
+                local_fp = ""
+            base_fps[aid] = f"{local_fp}#{remote_fp}"
 
     with _TODAY_CACHE_LOCK:
         if (
             not force_refresh
             and _TODAY_CACHE["data"] is not None
             and _TODAY_CACHE["date"] == today_str
-            and _TODAY_CACHE["fingerprints"] == current_fps
+            and _TODAY_CACHE["fingerprints"] == base_fps
             and (time.time() - _TODAY_CACHE["timestamp"] < 60.0)
         ):
             return _TODAY_CACHE["data"]
 
-    # 2. 差异化调度：筛选出指纹发生变动或今日未缓存的 Agent
+    # 2. 补齐"本机未安装但异机在用"的 Agent，保证今日概览与 Web 端全 Agent 口径一致
+    #    (仅在缓存未命中、确认需要重算时才展开，热路径零额外开销)
+    current_fps = dict(base_fps)
+    for aid in get_remote_agent_ids():
+        if aid not in current_fps and aid in SUPPORTED_AGENTS:
+            current_fps[aid] = f"remote-only#{remote_fp}"
+
+    # 3. 差异化调度：筛选出指纹发生变动或今日未缓存的 Agent
     needed_aids = []
     with _AGENT_TODAY_CACHE_LOCK:
         for aid, fp in current_fps.items():
@@ -1410,16 +1430,44 @@ def get_today_quick_summary(force_refresh=False):
             if force_refresh or not cached or cached.get("date") != today_str or cached.get("fingerprint") != fp:
                 needed_aids.append(aid)
 
-    # 3. 仅对需要刷新的 Agent 并发提取今日切片 (热文件剪枝)
+    # 4. 仅对需要刷新的 Agent 并发提取今日切片 (本机走热文件剪枝 + 异机走内存并集)
     def _fetch_agent_today(aid):
         adapter = ADAPTERS.get(aid)
-        if not adapter or not adapter.is_available():
+        local_slices = []
+        if adapter and adapter.is_available():
+            try:
+                dmap, _ = adapter.fetch_data(today_only=True)
+                local_slices = dmap.get(today_str, [])
+            except Exception:
+                local_slices = []
+
+        # 异机今日切片融合：未开启同步时 get_remote_agent_data 立即短路 (< 0.005ms)
+        remote_slices = []
+        try:
+            remote_daily, _ = get_remote_agent_data(aid)
+            if remote_daily:
+                remote_slices = remote_daily.get(today_str, [])
+        except Exception:
+            remote_slices = []
+
+        # 以 sessionId 去重合并：本机切片优先，异机补集
+        # 注意这里只读取远端字典，绝不就地改写它们
+        if remote_slices:
+            seen_sids = {s.get("sessionId") for s in local_slices if s.get("sessionId")}
+            slices = list(local_slices)
+            for rs in remote_slices:
+                sid = rs.get("sessionId")
+                if sid and sid in seen_sids:
+                    continue
+                if sid:
+                    seen_sids.add(sid)
+                slices.append(rs)
+        else:
+            slices = list(local_slices)
+
+        if not slices:
             return aid, None
         try:
-            dmap, _ = adapter.fetch_data(today_only=True)
-            slices = dmap.get(today_str, [])
-            if not slices:
-                return aid, None
             t_tokens = sum(s.get("totalTokens", 0) for s in slices)
             if t_tokens <= 0:
                 return aid, None
@@ -1431,9 +1479,14 @@ def get_today_quick_summary(force_refresh=False):
 
             latest_s = max(slices, key=lambda s: s.get("lastActivity", "") or "", default=None)
 
+            if adapter:
+                display_name = adapter.display_name
+            else:
+                display_name = SUPPORTED_AGENTS.get(aid, {}).get("name", aid)
+
             return aid, {
                 "id": aid,
-                "name": adapter.display_name,
+                "name": display_name,
                 "totalTokens": t_tokens,
                 "displayTokens": format_tokens_short(t_tokens),
                 "inputTokens": t_inp,
@@ -1459,7 +1512,7 @@ def get_today_quick_summary(force_refresh=False):
                         "data": res
                     }
 
-    # 4. 从 per-agent 缓存中汇总所有有效 Agent 数据
+    # 5. 从 per-agent 缓存中汇总所有有效 Agent 数据
     raw_agent_results = []
     with _AGENT_TODAY_CACHE_LOCK:
         for aid in current_fps.keys():
@@ -1518,7 +1571,9 @@ def get_today_quick_summary(force_refresh=False):
 
     with _TODAY_CACHE_LOCK:
         _TODAY_CACHE["date"] = today_str
-        _TODAY_CACHE["fingerprints"] = current_fps
+        # 注意存 base_fps（本机指纹）而非 current_fps：
+        # 后者在远程独有 Agent 上会被动态补齐，存它会导致下一次比较永远不相等而反复重算
+        _TODAY_CACHE["fingerprints"] = base_fps
         _TODAY_CACHE["timestamp"] = time.time()
         _TODAY_CACHE["data"] = result
 

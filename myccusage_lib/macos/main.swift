@@ -134,10 +134,11 @@ class AppState: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.isLoading = false
-                    // 若连接失败且后台尚未启动，尝试重新拉起服务
-                    if !self.isServerRunning {
-                        self.checkOrStartPythonServer()
-                    }
+                    // 连接失败：标记后台服务已不可用，并立即尝试重新拉起
+                    // （原实现仅在 isServerRunning == false 时才重拉，而该标志一旦置 true 便永不复位，
+                    //   导致守护进程意外退出后，程序屋会长期停留在陈旧数据上且无人察觉）
+                    self.isServerRunning = false
+                    self.checkOrStartPythonServer()
                 }
             }
         }
@@ -178,7 +179,8 @@ class AppState: ObservableObject {
     }
     
     private func spawnPythonServer() {
-        guard pythonProcess == nil else { return }
+        // 仅在尚无子进程、或上一次拉起的子进程已退出时才允许重新拉起
+        if let p = pythonProcess, p.isRunning { return }
         
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")

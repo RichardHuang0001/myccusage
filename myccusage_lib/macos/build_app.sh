@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 set -e
 
-# 定位脚本所在目录与项目根目录
+# 定位脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# 自适应探测项目根目录：向上查找含 pyproject.toml 的目录。
+# - 源码检出: <项目根>/myccusage_lib/macos/build_app.sh -> ROOT_DIR=<项目根>，构建产物落在 <项目根>/dist
+# - pip 安装: <site-packages>/myccusage_lib/macos/...（上层无 pyproject.toml）-> ROOT_DIR 为空，产物落在 ~/Applications
+# 这样同一份脚本在两种布局下都正确，无需在仓库里维护第二份副本。
+ROOT_DIR=""
+PROBE_DIR="${SCRIPT_DIR}"
+for _ in 1 2 3 4; do
+    if [ -f "${PROBE_DIR}/pyproject.toml" ]; then
+        ROOT_DIR="${PROBE_DIR}"
+        break
+    fi
+    PROBE_DIR="$(cd "${PROBE_DIR}/.." && pwd)"
+done
 
 echo "=================================================="
 echo "  🚀 正在构建 myccusage 原生 macOS 常驻应用..."
@@ -23,7 +36,7 @@ fi
 
 # 2. 编译原生 Swift 宿主
 echo "⚡️ 正在使用 Apple Swift 编译器构建原生二进制..."
-cd "${ROOT_DIR}"
+cd "${SCRIPT_DIR}"
 swiftc -O -parse-as-library \
     -framework Cocoa \
     -framework SwiftUI \

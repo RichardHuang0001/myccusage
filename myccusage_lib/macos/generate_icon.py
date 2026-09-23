@@ -2,6 +2,11 @@ import os
 import subprocess
 from PIL import Image, ImageDraw
 
+# 以脚本自身所在目录为基准解析输出路径。
+# 旧实现使用 "macos/AppIcon.icns" 这类相对当前工作目录的路径，
+# 一旦从 pip 安装位置( site-packages )被调用，就会在用户当前目录下乱建 macos/ 目录。
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def create_app_icon():
     size = 1024
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -54,7 +59,7 @@ def create_app_icon():
     draw.polygon(pts, fill=(56, 189, 248, 255))
 
     # 4. 生成 Apple 规范的 iconset
-    iconset_dir = "macos/AppIcon.iconset"
+    iconset_dir = os.path.join(BASE_DIR, "AppIcon.iconset")
     os.makedirs(iconset_dir, exist_ok=True)
 
     sizes = [
@@ -75,7 +80,7 @@ def create_app_icon():
         resized.save(os.path.join(iconset_dir, name))
 
     # 调用 iconutil 打包成 .icns
-    icns_path = "macos/AppIcon.icns"
+    icns_path = os.path.join(BASE_DIR, "AppIcon.icns")
     subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", icns_path], check=True)
     print(f"✅ 已成功生成 macOS 官方图标: {icns_path}")
 

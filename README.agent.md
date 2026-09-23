@@ -166,7 +166,7 @@ myccusage/
 │   │   └── __init__.py         # 适配器注册表 (ADAPTERS)
 │   ├── core.py                 # 标题解析、单 Agent 粒度缓存、聚合计算内核
 │   ├── cli.py                  # CLI 参数解析、East Asian Width 排版渲染与 Dock 调度
-│   ├── macos/                  # 内置 macOS 程序坞应用资源 (打包进 Wheel)
+│   ├── macos/                  # macOS 程序坞应用源码（唯一真源，随 Wheel 一同发布）
 │   │   ├── AppIcon.icns        # 高分辨率 macOS 原生应用图标
 │   │   ├── build_app.sh        # 原生 Swift 编译脚本
 │   │   ├── generate_icon.py    # 图标生成工具
@@ -177,7 +177,7 @@ myccusage/
 │           ├── index.html      # 单页 Dashboard 结构与多模型计费管理器
 │           ├── style.css       # 响应式玻璃拟态暗色/亮色样式
 │           └── app.js          # 原生 JavaScript 状态流、动态全站重算、Chart.js
-├── macos/                      # 根目录 macOS 构建源码与脚本 (方便开发者直调)
+├── macos/                      # 兼容入口转发壳 (build_app.sh 转发到 myccusage_lib/macos/，不持有源码副本)
 ├── scripts/                    # 维护与媒体生成辅助工具 (如 generate_cover.py)
 ├── docs/                       # 预览截图与媒体资源 (images/)
 ├── README.md                   # 中文主文档 (含 myccusage dock 快速使用)
