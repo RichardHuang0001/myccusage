@@ -68,35 +68,46 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple myccusage
 Run the following command to open the dashboard in your default browser:
 
 ```bash
-myccusage ui
+# Launch local Web Dashboard
+ccu web
 # or
-myccusage --web
+myccusage ui
 ```
 Default URL: `http://127.0.0.1:8488`.
 
 ### Command Line Interface (CLI)
 
-Output formatted usage tables directly in your terminal:
+Full support for ultra-concise command **`ccu`** with natural positional arguments (no `--` required):
 
 ```bash
-# View Antigravity daily ledger (default)
-myccusage --agy
+# 1. Zero-argument overview (today's token volume and costs across all agents)
+ccu
 
-# View Claude Code daily ledger
-myccusage --claude
+# 2. View daily ledgers for specific agents
+ccu agy             # Google Antigravity
+ccu claude          # Claude Code
+ccu codex           # OpenAI Codex
+ccu workbuddy       # WorkBuddy
+ccu grok            # Grok
 
-# View Codex / Hermes / OpenCode / WorkBuddy
-myccusage --codex
-myccusage --hermes
-myccusage --opencode
-myccusage --workbuddy
+# 3. View project lifetime totals (-s)
+ccu agy -s
 
-# View project lifetime totals
-myccusage --agy -s
-
-# Sort by token volume descending
-myccusage --agy -s -t
+# 4. Sort by token volume descending (-t)
+ccu agy -s -t
 ```
+
+#### Quick Command Reference
+
+| Concise Command | Original Flag | Description |
+| :--- | :--- | :--- |
+| `ccu` | `myccusage` | **Today's Overview**: Total tokens, cache hit rate & costs across all agents |
+| `ccu agy` | `myccusage --agy` | View Antigravity daily usage ledger (default daily slices) |
+| `ccu agy -s` | `myccusage --agy -s` | View Antigravity project lifetime summary |
+| `ccu claude` | `myccusage --claude` | View Claude Code daily ledger |
+| `ccu codex` | `myccusage --codex` | View OpenAI Codex ledger |
+| `ccu web` | `myccusage --web` | Launch local Web Dashboard and open browser automatically |
+| `ccu -t` | `myccusage -t` | Sort by token consumption descending |
 
 #### Common CLI Flags
 

@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, scan_files_fast
+from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, scan_files_fast, get_candidate_home_dirs
 
 class WorkBuddyAdapter(BaseAgentAdapter):
     """WorkBuddy 适配器，结合 SQLite 的元数据与 JSONL 日志文件的用量数据进行分析"""
@@ -20,25 +20,36 @@ class WorkBuddyAdapter(BaseAgentAdapter):
     has_times = True
 
     def __init__(self):
-        """初始化 WorkBuddy 基础配置路径"""
+        """初始化 WorkBuddy 基础配置路径，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.workbuddy")
-        self.db_path = os.path.join(self.base_dir, "workbuddy.db")
+        self.base_dirs = [
+            os.path.join(h, ".workbuddy")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".workbuddy"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.workbuddy")]
+        self.base_dir = self.base_dirs[0]
+        self.db_paths = [
+            os.path.join(b, "workbuddy.db")
+            for b in self.base_dirs
+            if os.path.exists(os.path.join(b, "workbuddy.db"))
+        ]
+        self.db_path = self.db_paths[0] if self.db_paths else os.path.join(self.base_dir, "workbuddy.db")
 
     def is_available(self) -> bool:
         """检查 WorkBuddy 目录是否存在"""
-        return os.path.exists(self.base_dir)
+        return any(os.path.exists(b) for b in self.base_dirs)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 SQLite 数据库或通过回退策略扫描日志提取对话的标题及时间戳"""
         titles = {}
         times = {}
-        if os.path.exists(self.db_path):
+        for db in self.db_paths:
             try:
-                uri = f"file:{self.db_path}?mode=ro"
+                uri = f"file:{db}?mode=ro"
                 conn = sqlite3.connect(uri, uri=True, timeout=3.0)
                 cur = conn.cursor()
-                # 从 sessions 表中直接读取标题与时间戳信息
                 for row in cur.execute("SELECT id, title, custom_title, created_at, updated_at, last_activity_at FROM sessions"):
                     sid, t, ct, ca, ua, la = row
                     title = ct or t
@@ -52,33 +63,34 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                 pass
 
         # 兜底补充扫描 projects 目录中未记录在 DB 或 custom-title 的会话
-        project_files = glob.glob(os.path.join(self.base_dir, "projects/*/*.jsonl"))
-        for p in project_files:
-            sid = os.path.basename(p).replace(".jsonl", "")
-            if sid not in titles or not titles[sid]:
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        for line in f:
-                            if not line.strip():
-                                continue
-                            if "custom-title" in line or '"role":"user"' in line:
-                                obj = json.loads(line)
-                                if obj.get("type") == "custom-title" and obj.get("customTitle"):
-                                    titles[sid] = obj["customTitle"].strip()
-                                    break
-                                elif obj.get("type") == "message" and obj.get("role") == "user":
-                                    cnt = obj.get("content", [])
-                                    if isinstance(cnt, list):
-                                        for item in cnt:
-                                            if isinstance(item, dict) and item.get("text"):
-                                                titles[sid] = item["text"].split("\n")[0][:60].strip()
-                                                break
-                                    elif isinstance(cnt, str):
-                                        titles[sid] = cnt.split("\n")[0][:60].strip()
-                                    if sid in titles:
+        for b in self.base_dirs:
+            project_files = glob.glob(os.path.join(b, "projects/*/*.jsonl"))
+            for p in project_files:
+                sid = os.path.basename(p).replace(".jsonl", "")
+                if sid not in titles or not titles[sid]:
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if not line.strip():
+                                    continue
+                                if "custom-title" in line or '"role":"user"' in line:
+                                    obj = json.loads(line)
+                                    if obj.get("type") == "custom-title" and obj.get("customTitle"):
+                                        titles[sid] = obj["customTitle"].strip()
                                         break
-                except Exception:
-                    pass
+                                    elif obj.get("type") == "message" and obj.get("role") == "user":
+                                        cnt = obj.get("content", [])
+                                        if isinstance(cnt, list):
+                                            for item in cnt:
+                                                if isinstance(item, dict) and item.get("text"):
+                                                    titles[sid] = item["text"].split("\n")[0][:60].strip()
+                                                    break
+                                        elif isinstance(cnt, str):
+                                            titles[sid] = cnt.split("\n")[0][:60].strip()
+                                        if sid in titles:
+                                            break
+                    except Exception:
+                        pass
         return titles, times
 
     def get_source_fingerprint(self) -> str:
@@ -86,13 +98,20 @@ class WorkBuddyAdapter(BaseAgentAdapter):
         if not self.is_available():
             return ""
         parts = []
-        if os.path.exists(self.db_path):
+        for db in self.db_paths:
             try:
-                st = os.stat(self.db_path)
+                st = os.stat(db)
                 parts.append(f"{st.st_mtime_ns}:{st.st_size}")
             except OSError:
                 pass
-        dirs = [os.path.join(self.base_dir, "projects"), os.path.join(self.base_dir, "sessions")]
+        dirs = []
+        for b in self.base_dirs:
+            p_dir = os.path.join(b, "projects")
+            s_dir = os.path.join(b, "sessions")
+            if os.path.isdir(p_dir):
+                dirs.append(p_dir)
+            if os.path.isdir(s_dir):
+                dirs.append(s_dir)
         hot = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=True)
         parts.append(str(len(hot)))
         max_m = 0
@@ -122,7 +141,14 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                 if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
                     return self._full_cache[1]
 
-        dirs = [os.path.join(self.base_dir, "projects"), os.path.join(self.base_dir, "sessions")]
+        dirs = []
+        for b in self.base_dirs:
+            p_dir = os.path.join(b, "projects")
+            s_dir = os.path.join(b, "sessions")
+            if os.path.isdir(p_dir):
+                dirs.append(p_dir)
+            if os.path.isdir(s_dir):
+                dirs.append(s_dir)
         files = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         daily_map = {}

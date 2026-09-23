@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs
 
 class GrokAdapter(BaseAgentAdapter):
     """Grok 适配器，支持 SQLite 及本地日志文件的解析与防抖缓存"""
@@ -20,14 +20,26 @@ class GrokAdapter(BaseAgentAdapter):
     has_times = False
 
     def __init__(self):
-        """初始化 Grok 配置和会话目录"""
+        """初始化 Grok 配置和会话目录，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.grok")
-        self.sessions_dir = os.path.join(self.base_dir, "sessions")
+        self.base_dirs = [
+            os.path.join(h, ".grok")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".grok"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.grok")]
+        self.base_dir = self.base_dirs[0]
+        self.sessions_dirs = [
+            os.path.join(b, "sessions")
+            for b in self.base_dirs
+            if os.path.exists(os.path.join(b, "sessions"))
+        ]
+        self.sessions_dir = self.sessions_dirs[0] if self.sessions_dirs else os.path.join(self.base_dir, "sessions")
 
     def is_available(self) -> bool:
         """检查 grok 配置目录是否存在"""
-        return os.path.exists(self.base_dir)
+        return any(os.path.exists(b) for b in self.base_dirs)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 SQLite 及 jsonl 中提取标题数据"""
@@ -37,47 +49,50 @@ class GrokAdapter(BaseAgentAdapter):
             return titles, times
 
         # 从 SQLite 数据库读取
-        db_path = os.path.join(self.sessions_dir, "session_search.sqlite")
-        if os.path.exists(db_path):
-            try:
-                uri = f"file:{db_path}?mode=ro"
-                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
-                cur = conn.cursor()
-                cur.execute("SELECT session_id, title FROM session_docs")
-                for sid, t in cur.fetchall():
-                    if t and t.strip():
-                        titles[sid] = t.strip()[:60]
-                conn.close()
-            except Exception:
-                pass
+        for sdir in self.sessions_dirs:
+            db_path = os.path.join(sdir, "session_search.sqlite")
+            if os.path.exists(db_path):
+                try:
+                    uri = f"file:{db_path}?mode=ro"
+                    conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                    cur = conn.cursor()
+                    cur.execute("SELECT session_id, title FROM session_docs")
+                    for sid, t in cur.fetchall():
+                        if t and t.strip():
+                            titles[sid] = t.strip()[:60]
+                    conn.close()
+                except Exception:
+                    pass
 
         # 从 summary 日志读取
-        for summary_path in glob.glob(os.path.join(self.sessions_dir, "**/summary.json"), recursive=True):
-            try:
-                with open(summary_path, "r", encoding="utf-8") as f:
-                    sdata = json.load(f)
-                    sid = sdata.get("info", {}).get("id")
-                    summ = sdata.get("session_summary")
-                    if sid and summ and summ.strip() and sid not in titles:
-                        titles[sid] = summ.strip()[:60]
-            except Exception:
-                pass
+        for sdir in self.sessions_dirs:
+            for summary_path in glob.glob(os.path.join(sdir, "**", "summary.json"), recursive=True):
+                try:
+                    with open(summary_path, "r", encoding="utf-8") as f:
+                        sdata = json.load(f)
+                        sid = sdata.get("info", {}).get("id")
+                        summ = sdata.get("session_summary")
+                        if sid and summ and summ.strip() and sid not in titles:
+                            titles[sid] = summ.strip()[:60]
+                except Exception:
+                    pass
 
         # 从 prompt 历史日志读取
-        for ph in glob.glob(os.path.join(self.sessions_dir, "*/prompt_history.jsonl")):
-            try:
-                with open(ph, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            row = json.loads(line)
-                            sid = row.get("session_id")
-                            p = row.get("prompt")
-                            if sid and p and sid not in titles:
-                                titles[sid] = p.strip()[:60]
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+        for sdir in self.sessions_dirs:
+            for ph in glob.glob(os.path.join(sdir, "*", "prompt_history.jsonl")):
+                try:
+                    with open(ph, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                row = json.loads(line)
+                                sid = row.get("session_id")
+                                p = row.get("prompt")
+                                if sid and p and sid not in titles:
+                                    titles[sid] = p.strip()[:60]
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
         return titles, times
 
@@ -86,14 +101,15 @@ class GrokAdapter(BaseAgentAdapter):
         if not self.is_available():
             return ""
         parts = []
-        db_path = os.path.join(self.sessions_dir, "session_search.sqlite")
-        if os.path.exists(db_path):
-            try:
-                st = os.stat(db_path)
-                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
-            except OSError:
-                pass
-        hot = scan_files_fast(self.sessions_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        for sdir in self.sessions_dirs:
+            db_path = os.path.join(sdir, "session_search.sqlite")
+            if os.path.exists(db_path):
+                try:
+                    st = os.stat(db_path)
+                    parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+                except OSError:
+                    pass
+        hot = scan_files_fast(self.sessions_dirs, extensions=(".jsonl",), recursive=True, today_only=True)
         parts.append(str(len(hot)))
         max_m = 0
         for h in hot:
@@ -124,7 +140,7 @@ class GrokAdapter(BaseAgentAdapter):
         daily_map = {}
         session_map = {}
 
-        files = scan_files_fast(self.sessions_dir, extensions=("updates.jsonl",), recursive=True, today_only=today_only)
+        files = scan_files_fast(self.sessions_dirs, extensions=("updates.jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             if not self._file_cache:

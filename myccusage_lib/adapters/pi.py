@@ -10,7 +10,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
 
 class PiAdapter(BaseAgentAdapter):
     """Pi Agent 适配器，解析本地 jsonl 日志以提取信息"""
@@ -19,13 +19,20 @@ class PiAdapter(BaseAgentAdapter):
     has_times = False
 
     def __init__(self):
-        """初始化 Pi 会话目录"""
+        """初始化 Pi 会话目录，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.pi/agent/sessions")
+        self.base_dirs = [
+            os.path.join(h, ".pi", "agent", "sessions")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".pi", "agent", "sessions"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.pi/agent/sessions")]
+        self.base_dir = self.base_dirs[0]
 
     def is_available(self) -> bool:
         """检查基础目录是否存在"""
-        return os.path.exists(self.base_dir)
+        return any(os.path.exists(b) for b in self.base_dirs)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """扫描各会话日志文件以提取用户请求作为标题"""
@@ -34,37 +41,38 @@ class PiAdapter(BaseAgentAdapter):
         if not self.is_available():
             return titles, times
 
-        for p in glob.glob(os.path.join(self.base_dir, "*/*.jsonl")):
-            sid = os.path.basename(p).split("_")[-1].replace(".jsonl", "")
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        try:
-                            data = json.loads(line)
-                        except Exception:
-                            continue
-                        if data.get("type") == "message" and data.get("message", {}).get("role") == "user":
-                            content = data["message"].get("content", [])
-                            t = ""
-                            if isinstance(content, str):
-                                t = content.strip()
-                            elif isinstance(content, list):
-                                parts = [x.get("text", "") for x in content if isinstance(x, dict) and x.get("type") == "text"]
-                                t = "".join(parts).strip()
-                            if t:
-                                titles[sid] = " ".join(t.split())[:60]
-                                break
-            except Exception:
-                pass
+        for b in self.base_dirs:
+            for p in glob.glob(os.path.join(b, "*", "*.jsonl")):
+                sid = os.path.basename(p).split("_")[-1].replace(".jsonl", "")
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except Exception:
+                                continue
+                            if data.get("type") == "message" and data.get("message", {}).get("role") == "user":
+                                content = data["message"].get("content", [])
+                                t = ""
+                                if isinstance(content, str):
+                                    t = content.strip()
+                                elif isinstance(content, list):
+                                    parts = [x.get("text", "") for x in content if isinstance(x, dict) and x.get("type") == "text"]
+                                    t = "".join(parts).strip()
+                                if t:
+                                    titles[sid] = " ".join(t.split())[:60]
+                                    break
+                except Exception:
+                    pass
         return titles, times
 
     def get_source_fingerprint(self) -> str:
         """极速获取 Pi 会话目录修改状态指纹 (< 1ms)"""
         if not self.is_available():
             return ""
-        hot = scan_files_fast(self.base_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        hot = scan_files_fast(self.base_dirs, extensions=(".jsonl",), recursive=True, today_only=True)
         max_m = 0
         for h in hot:
             try:
@@ -94,7 +102,7 @@ class PiAdapter(BaseAgentAdapter):
         daily_map = {}
         session_map = {}
 
-        files = scan_files_fast(self.base_dir, extensions=(".jsonl",), recursive=True, today_only=today_only)
+        files = scan_files_fast(self.base_dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             for fpath in files:

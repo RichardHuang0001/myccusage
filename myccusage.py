@@ -21,6 +21,19 @@ myccusage:
 import os
 import sys
 
+# Windows 原生终端 GBK 兼容防护 (对 macOS / Linux 零开销)
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # 动态解析真实脚本所在目录，确保无论通过软链接、PATH 还是直接调用均能正确导入
 # 这是为了兼容用户在任意目录下通过全局别名或软链接执行本脚本时，依然能正确定位到 myccusage_lib 包
 real_path = os.path.realpath(__file__)  # 获取真实路径，解开软链接

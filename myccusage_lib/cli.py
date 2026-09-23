@@ -12,10 +12,25 @@ import os
 import shutil
 import subprocess
 import unicodedata
+
+# Windows 原生终端输出 UTF-8 编码兼容防护 (对 macOS / Linux 零开销)
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from .core import (
     SUPPORTED_AGENTS,
     get_daily_data,
-    get_session_data
+    get_session_data,
+    get_today_quick_summary,
 )
 
 def display_len(s):
@@ -442,45 +457,94 @@ def render_session_table(data):
     print(grand_total_row)
     print("=" * total_table_width)
 
+def render_quick_summary(summary):
+    """
+    零参数运行或速览模式下渲染今日多 Agent 消耗速报卡片。
+    """
+    total_table_width = min(88, shutil.get_terminal_size((88, 20)).columns)
+    total_table_width = max(total_table_width, 70)
+
+    print("=" * total_table_width)
+    print(f"  myccusage 今日用量速报 ({summary['date']})")
+    print(f"  * 计价基准：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
+    print("=" * total_table_width)
+
+    tot_str = format_tokens(summary.get("totalTokens", 0)).strip()
+    hit_str = f"{summary.get('cacheHitRate', 0.0):.1f}%"
+    cost_str = f"¥{summary.get('costCny', 0.0):.2f}"
+    usd_str = f"~${summary.get('costUsd', 0.0):.2f} USD"
+
+    print(f"  今日总消耗: {tot_str} Tokens │ 缓存命中率: {hit_str} │ 参考花费: {cost_str} ({usd_str})")
+    print("─" * total_table_width)
+
+    agents = summary.get("agents", [])
+    if not agents:
+        print("  今日暂无活动会话记录。")
+    else:
+        w_name = 24
+        w_tok = 12
+        w_hit = 10
+        w_cost = 12
+        w_sess = 10
+        hdr = (
+            pad_str("Agent 名称", w_name, "left") + " │ " +
+            pad_str("今日Token", w_tok, "right") + " │ " +
+            pad_str("缓存率", w_hit, "right") + " │ " +
+            pad_str("等效费用", w_cost, "right") + " │ " +
+            pad_str("会话数", w_sess, "right")
+        )
+        print(hdr)
+        print("─" * total_table_width)
+        for a in agents:
+            row = (
+                pad_str(a["name"], w_name, "left") + " │ " +
+                pad_str(format_tokens(a["totalTokens"]), w_tok, "right") + " │ " +
+                pad_str(f"{a['hitRate']:.1f}%", w_hit, "right") + " │ " +
+                pad_str(f"¥{a['costCny']:.2f}", w_cost, "right") + " │ " +
+                pad_str(f"{a['sessionCount']} 笔", w_sess, "right")
+            )
+            print(row)
+
+    print("=" * total_table_width)
+    print("  💡 常用极简命令 (支持 ccu 或 myccusage):")
+    print("     ccu agy         # 查看 Antigravity 每日明细账本")
+    print("     ccu agy -s      # 查看 Antigravity 项目累计总览")
+    print("     ccu claude      # 查看 Claude Code 每日账本")
+    print("     ccu codex       # 查看 OpenAI Codex 每日账本")
+    print("     ccu web         # 打开本地 Web 仪表盘")
+    print("     ccu --help      # 查看完整参数帮助")
+    print("=" * total_table_width)
+
 def print_usage_hint():
     """打印 CLI 使用帮助信息"""
     print("=" * 78)
     print("  myccusage: 多 Agent 会话用量与 DeepSeek-V4.1-Flash 等效计费工具")
     print("=" * 78)
     print("用法:")
+    print("  ccu [agent名称] [模式选项] [排序选项]     # 极简命令")
     print("  myccusage <agent参数> [模式选项] [排序选项]")
-    print("  myccusage --web [--port <端口>]         # 启动网页前端仪表盘\n")
-    print("支持的 Agent 参数:")
-    print("  --agy, --antigravity    统计 Google Antigravity (App + CLI + IDE)")
-    print("  --claude                统计 Claude Code")
-    print("  --hermes                统计 Hermes Agent")
-    print("  --codex                 统计 OpenAI Codex")
-    print("  --grok                  统计 Grok")
-    print("  --pi                    统计 Pi Agent")
-    print("  --opencode              统计 OpenCode")
-    print("  --workbuddy             统计 WorkBuddy (腾讯旗下 AI 编程 Agent)\n")
+    print("  ccu web [--port <端口>]                  # 启动网页前端仪表盘\n")
+    print("支持的 Agent (直接输入名称即可，无需 --):")
+    print("  agy, antigravity        Google Antigravity (App + CLI + IDE)")
+    print("  claude                  Claude Code")
+    print("  codex                   OpenAI Codex")
+    print("  workbuddy               WorkBuddy (腾讯旗下 AI 编程 Agent)")
+    print("  grok                    Grok")
+    print("  hermes                  Hermes Agent")
+    print("  opencode                OpenCode")
+    print("  pi                      Pi Agent\n")
     print("模式选项 (双模分流):")
     print("  -d, --daily             [默认] 每日会话账本模式")
     print("                          不混淆前日用量，按“此日、此 Session”精确分列，日/周小计绝不漂移")
     print("  -s, --session           项目总览模式")
     print("                          专注每个 Project / Session 的全生命周期累计总消耗（体现整体任务成本）\n")
-    print("网页与交互选项:")
-    print("  -w, --web               启动本地网页仪表盘 Dashboard (默认端口 8488)")
-    print("  -p, --port <端口>       指定 Web 仪表盘端口号 (默认 8488)\n")
-    print("排序与通用选项:")
-    print("  dock, --dock            一键启动 macOS 原生程序坞常驻微型看板 (支持自动极速构建与拉起)")
-    print("  -t, --tokens            按【Token 消耗量】降序排列（默认按时间正序排列，最新在最底部）")
-    print("  -v, --version           查看版本号 (100% Native)")
-    print("  -h, --help              查看本帮助信息\n")
-    print("示例:")
-    print("  myccusage --agy               # Antigravity 每日会话账本 (最新在最底部，小计防漂移)")
-    print("  myccusage --claude            # Claude Code 每日会话账本")
-    print("  myccusage --agy -s            # Antigravity 项目全生命周期总览")
-    print("  myccusage --agy -s -t         # Antigravity 项目总用量大户排行")
-    print("  myccusage --opencode          # OpenCode 每日会话账本")
-    print("  myccusage --workbuddy         # WorkBuddy 每日会话账本")
-    print("  myccusage dock                # 启动 macOS 原生程序坞常驻应用 (DockTile + 磨砂面板)")
-    print("  myccusage --web               # 一键启动 Web 前端仪表盘并自动打开浏览器")
+    print("常用极简示例:")
+    print("  ccu                           # 今日多 Agent 消耗速报")
+    print("  ccu agy                       # Antigravity 每日会话账本")
+    print("  ccu agy -s                    # Antigravity 项目全生命周期总览")
+    print("  ccu claude                    # Claude Code 每日会话账本")
+    print("  ccu codex -s                  # Codex 项目全生命周期总览")
+    print("  ccu web                       # 一键启动 Web 仪表盘")
     print("=" * 78)
 
 def launch_macos_dock_app():
@@ -585,30 +649,30 @@ def main(raw_args=None):
                 web_port = int(raw_args[i])
             except ValueError:
                 pass
-        # 解析 Agent 类型匹配标记
-        elif a in ("--agy", "--antigravity"):
+        # 解析 Agent 类型匹配标记 (支持带 -- 或不带 -- 的自然命令)
+        elif a in ("--agy", "--antigravity", "agy", "antigravity"):
             agent_type = "agy"
-        elif a == "--claude":
+        elif a in ("--claude", "claude"):
             agent_type = "claude"
-        elif a == "--hermes":
+        elif a in ("--hermes", "hermes"):
             agent_type = "hermes"
-        elif a == "--codex":
+        elif a in ("--codex", "codex"):
             agent_type = "codex"
-        elif a == "--grok":
+        elif a in ("--grok", "grok"):
             agent_type = "grok"
-        elif a == "--pi":
+        elif a in ("--pi", "pi"):
             agent_type = "pi"
-        elif a == "--opencode":
+        elif a in ("--opencode", "opencode"):
             agent_type = "opencode"
-        elif a == "--workbuddy":
+        elif a in ("--workbuddy", "workbuddy"):
             agent_type = "workbuddy"
         # 解析统计视图模式标记（Session总览或每日账本）
-        elif a in ("-s", "--session"):
+        elif a in ("-s", "--session", "session"):
             mode = "session"
-        elif a in ("-d", "--daily"):
+        elif a in ("-d", "--daily", "daily"):
             mode = "daily"
         # 解析排序偏好标记（是否按 Token 排列）
-        elif a in ("--tokens", "-t"):
+        elif a in ("--tokens", "-t", "tokens"):
             sort_by_tokens = True
         else:
             # 收集未被识别的参数，可能传递给底层方法作透传用途
@@ -626,9 +690,13 @@ def main(raw_args=None):
         start_server(port=web_port, default_agent=agent_type or "agy", auto_open=auto_open, daemon_mode=is_daemon)
         return
 
-    # CLI 模式下要求至少指定一个有效的目标 Agent
+    # CLI 模式下若未指定具体 Agent，直接输出今日多 Agent 消耗速报
     if not agent_type:
-        print_usage_hint()
+        try:
+            summary = get_today_quick_summary()
+            render_quick_summary(summary)
+        except Exception:
+            print_usage_hint()
         return
 
     try:

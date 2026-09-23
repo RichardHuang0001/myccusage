@@ -9,8 +9,78 @@ Agent 适配器基类与公共工具函数:
 from __future__ import annotations
 
 import os
+import sys
+import re
 import threading
 from datetime import datetime, timezone
+
+_CANDIDATE_HOME_DIRS: list[str] | None = None
+
+def get_candidate_home_dirs() -> list[str]:
+    """
+    极速自适应获取当前环境下的所有候选用户根目录:
+    - macOS: 直接返回 [~]，0纳秒静态返回，绝无多余系统调用或性能损耗。
+    - 纯 Linux (非 WSL): 返回 [~]。
+    - WSL: 返回 [~, Windows用户主目录(/mnt/c/Users/<user>)]，支持双端数据无缝互通。
+    - Windows 原生: 返回 [~] 以及 (若存在) 可达的 \\wsl.localhost\\... 目录。
+    整个生命周期只在首次调用时解析并内存常驻 (< 0.05ms)。
+    """
+    global _CANDIDATE_HOME_DIRS
+    if _CANDIDATE_HOME_DIRS is not None:
+        return _CANDIDATE_HOME_DIRS
+
+    res = []
+    default_home = os.path.expanduser("~")
+    if default_home and os.path.isdir(default_home):
+        res.append(default_home)
+
+    # 1. macOS 极速短路：绝无多余系统探测与 I/O，保障 macOS 原生极致体验
+    if sys.platform == "darwin":
+        _CANDIDATE_HOME_DIRS = res
+        return _CANDIDATE_HOME_DIRS
+
+    # 2. WSL 环境检测与 Windows 宿主目录发现
+    if sys.platform.startswith("linux"):
+        is_wsl = "WSL_DISTRO_NAME" in os.environ or os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
+        if is_wsl and os.path.isdir("/mnt/c/Users"):
+            win_user = None
+            path_val = os.environ.get("PATH", "")
+            m = re.search(r'/mnt/c/Users/([^/:]+)', path_val)
+            if m:
+                u = m.group(1)
+                if u not in ("Public", "Default", "All Users"):
+                    win_user = u
+            if not win_user:
+                u_cand = os.environ.get("USER", "")
+                if u_cand and os.path.isdir(f"/mnt/c/Users/{u_cand}"):
+                    win_user = u_cand
+                else:
+                    for d in os.listdir("/mnt/c/Users"):
+                        if d not in ("Public", "Default", "Default User", "All Users") and os.path.isdir(f"/mnt/c/Users/{d}"):
+                            win_user = d
+                            break
+            if win_user:
+                win_home = f"/mnt/c/Users/{win_user}"
+                if os.path.isdir(win_home) and win_home not in res:
+                    res.append(win_home)
+
+    # 3. Windows 原生环境与 WSL 镜像目录可选互通
+    elif sys.platform == "win32":
+        wsl_cand = os.environ.get("WSL_DISTRO_NAME", "Ubuntu")
+        for prefix in (f"\\\\wsl.localhost\\{wsl_cand}\\home", f"\\\\wsl$\\{wsl_cand}\\home"):
+            if os.path.isdir(prefix):
+                try:
+                    for u in os.listdir(prefix):
+                        cand = os.path.join(prefix, u)
+                        if os.path.isdir(cand) and cand not in res:
+                            res.append(cand)
+                    break
+                except OSError:
+                    pass
+
+    _CANDIDATE_HOME_DIRS = res
+    return _CANDIDATE_HOME_DIRS
+
 
 class BaseAgentAdapter:
     """Agent 适配器基类，所有具体的 Agent 适配器都应继承此类"""

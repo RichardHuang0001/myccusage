@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, get_today_midnight_ts
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, get_today_midnight_ts, get_candidate_home_dirs
 
 class HermesAdapter(BaseAgentAdapter):
     """Hermes Agent 适配器，通过直连 SQLite 数据库进行高速查询"""
@@ -18,31 +18,46 @@ class HermesAdapter(BaseAgentAdapter):
     has_times = True
 
     def __init__(self):
-        """初始化数据库连接路径"""
+        """初始化数据库连接路径，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.hermes")
-        self.db_path = os.path.join(self.base_dir, "state.db")
+        self.base_dirs = [
+            os.path.join(h, ".hermes")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".hermes"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.hermes")]
+        self.base_dir = self.base_dirs[0]
+        self.db_paths = [
+            os.path.join(b, "state.db")
+            for b in self.base_dirs
+            if os.path.exists(os.path.join(b, "state.db"))
+        ]
+        self.db_path = self.db_paths[0] if self.db_paths else os.path.join(self.base_dir, "state.db")
 
     def is_available(self) -> bool:
         """检查 state.db 数据库文件是否存在"""
-        return os.path.exists(self.db_path)
+        return len(self.db_paths) > 0
 
     def get_source_fingerprint(self) -> str:
         """快速获取 state.db 修改状态指纹 (< 0.1ms)"""
         if not self.is_available():
             return ""
-        try:
-            st = os.stat(self.db_path)
-            wal_path = self.db_path + "-wal"
-            wal_mtime = 0
-            if os.path.exists(wal_path):
-                try:
-                    wal_mtime = os.stat(wal_path).st_mtime_ns
-                except OSError:
-                    pass
-            return f"{st.st_mtime_ns}:{st.st_size}:{wal_mtime}"
-        except OSError:
-            return ""
+        parts = []
+        for db in self.db_paths:
+            try:
+                st = os.stat(db)
+                wal_path = db + "-wal"
+                wal_mtime = 0
+                if os.path.exists(wal_path):
+                    try:
+                        wal_mtime = os.stat(wal_path).st_mtime_ns
+                    except OSError:
+                        pass
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}:{wal_mtime}")
+            except OSError:
+                pass
+        return "|".join(parts)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 sessions 表提取所有会话的标题和时间"""
@@ -50,21 +65,21 @@ class HermesAdapter(BaseAgentAdapter):
         times = {}
         if not self.is_available():
             return titles, times
-        try:
-            uri = f"file:{self.db_path}?mode=ro"
-            # 开启只读连接模式，避免锁定数据库
-            conn = sqlite3.connect(uri, uri=True, timeout=3.0)
-            c = conn.cursor()
-            for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
-                sid, st, et, title = row
-                last_t = et or st
-                if last_t:
-                    times[sid] = ts_to_iso(last_t)
-                if title and title.strip():
-                    titles[sid] = title.strip()
-            conn.close()
-        except Exception:
-            pass
+        for db in self.db_paths:
+            try:
+                uri = f"file:{db}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                c = conn.cursor()
+                for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
+                    sid, st, et, title = row
+                    last_t = et or st
+                    if last_t:
+                        times[sid] = ts_to_iso(last_t)
+                    if title and title.strip():
+                        titles[sid] = title.strip()
+                conn.close()
+            except Exception:
+                pass
         return titles, times
 
     def fetch_data(self, today_only: bool = False) -> tuple[dict[str, list[dict]], list[dict]]:
@@ -85,67 +100,68 @@ class HermesAdapter(BaseAgentAdapter):
         daily_map = {}
         session_list = []
 
-        try:
-            uri = f"file:{self.db_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=3.0)
-            c = conn.cursor()
+        for db in self.db_paths:
+            try:
+                uri = f"file:{db}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                c = conn.cursor()
 
-            where_clauses = [
-                "model IS NOT NULL",
-                "TRIM(model) != ''",
-                "(input_tokens + output_tokens + cache_read_tokens) > 0"
-            ]
-            params = []
-            if today_only:
-                min_ts = get_today_midnight_ts()
-                where_clauses.append("(started_at >= ? OR ended_at >= ?)")
-                params.extend([min_ts, min_ts])
+                where_clauses = [
+                    "model IS NOT NULL",
+                    "TRIM(model) != ''",
+                    "(input_tokens + output_tokens + cache_read_tokens) > 0"
+                ]
+                params = []
+                if today_only:
+                    min_ts = get_today_midnight_ts()
+                    where_clauses.append("(started_at >= ? OR ended_at >= ?)")
+                    params.extend([min_ts, min_ts])
 
-            where_sql = " AND ".join(where_clauses)
-            sql = f"""
-                SELECT
-                    id,
-                    started_at,
-                    ended_at,
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens
-                FROM sessions
-                WHERE {where_sql}
-                ORDER BY started_at ASC
-            """
-            for row in c.execute(sql, params):
-                sid, st, et, inp, out, cr = row
-                act_time = et or st or 0
-                date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
-                iso_str = ts_to_iso(act_time) if act_time else ""
-                tot = inp + cr + out
+                where_sql = " AND ".join(where_clauses)
+                sql = f"""
+                    SELECT
+                        id,
+                        started_at,
+                        ended_at,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens
+                    FROM sessions
+                    WHERE {where_sql}
+                    ORDER BY started_at ASC
+                """
+                for row in c.execute(sql, params):
+                    sid, st, et, inp, out, cr = row
+                    act_time = et or st or 0
+                    date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
+                    iso_str = ts_to_iso(act_time) if act_time else ""
+                    tot = inp + cr + out
 
-                # 每日切片记录 (按天聚合)
-                if date_str not in daily_map:
-                    daily_map[date_str] = []
-                daily_map[date_str].append({
-                    "sessionId": sid,
-                    "date": date_str,
-                    "inputTokens": inp,
-                    "cacheReadTokens": cr,
-                    "outputTokens": out,
-                    "totalTokens": tot,
-                    "lastActivity": iso_str
-                })
+                    # 每日切片记录 (按天聚合)
+                    if date_str not in daily_map:
+                        daily_map[date_str] = []
+                    daily_map[date_str].append({
+                        "sessionId": sid,
+                        "date": date_str,
+                        "inputTokens": inp,
+                        "cacheReadTokens": cr,
+                        "outputTokens": out,
+                        "totalTokens": tot,
+                        "lastActivity": iso_str
+                    })
 
-                # 项目生命周期汇总记录
-                session_list.append({
-                    "sessionId": sid,
-                    "inputTokens": inp,
-                    "cacheReadTokens": cr,
-                    "outputTokens": out,
-                    "totalTokens": tot,
-                    "lastActivity": iso_str
-                })
-            conn.close()
-        except Exception:
-            pass
+                    # 项目生命周期汇总记录
+                    session_list.append({
+                        "sessionId": sid,
+                        "inputTokens": inp,
+                        "cacheReadTokens": cr,
+                        "outputTokens": out,
+                        "totalTokens": tot,
+                        "lastActivity": iso_str
+                    })
+                conn.close()
+            except Exception:
+                pass
 
         if not today_only:
             with self._lock:

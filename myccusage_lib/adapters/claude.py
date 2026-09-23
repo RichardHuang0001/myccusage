@@ -11,7 +11,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
 
 class ClaudeAdapter(BaseAgentAdapter):
     """Claude Code 适配器，处理本地历史日志文件"""
@@ -20,14 +20,26 @@ class ClaudeAdapter(BaseAgentAdapter):
     has_times = False
 
     def __init__(self):
-        """初始化 Claude 配置目录路径"""
+        """初始化 Claude 配置目录路径，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.claude")
-        self.projects_dir = os.path.join(self.base_dir, "projects")
+        self.base_dirs = [
+            os.path.join(h, ".claude")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".claude"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.claude")]
+        self.base_dir = self.base_dirs[0]
+        self.projects_dirs = [
+            os.path.join(b, "projects")
+            for b in self.base_dirs
+            if os.path.exists(os.path.join(b, "projects"))
+        ]
+        self.projects_dir = self.projects_dirs[0] if self.projects_dirs else os.path.join(self.base_dir, "projects")
 
     def is_available(self) -> bool:
         """检查目录是否存在以确定可用性"""
-        return os.path.exists(self.base_dir)
+        return any(os.path.exists(b) for b in self.base_dirs)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 history.jsonl 与各个项目的日志中提取对话标题与时间戳"""
@@ -36,47 +48,49 @@ class ClaudeAdapter(BaseAgentAdapter):
         if not self.is_available():
             return titles, times
 
-        history_file = os.path.join(self.base_dir, "history.jsonl")
-        if os.path.exists(history_file):
-            try:
-                with open(history_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            obj = json.loads(line)
-                            sid = obj.get("sessionId")
-                            disp = obj.get("display", "").strip()
-                            if sid and disp and sid not in titles:
-                                titles[sid] = disp[:60]
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        for p in glob.glob(os.path.join(self.projects_dir, "*/*.jsonl")):
-            sid = os.path.basename(p).replace(".jsonl", "")
-            if sid not in titles or titles[sid].startswith("/"):
+        for b in self.base_dirs:
+            history_file = os.path.join(b, "history.jsonl")
+            if os.path.exists(history_file):
                 try:
-                    with open(p, "r", encoding="utf-8") as f:
+                    with open(history_file, "r", encoding="utf-8") as f:
                         for line in f:
                             try:
                                 obj = json.loads(line)
+                                sid = obj.get("sessionId")
+                                disp = obj.get("display", "").strip()
+                                if sid and disp and sid not in titles:
+                                    titles[sid] = disp[:60]
                             except Exception:
-                                continue
-                            if obj.get("type") == "user":
-                                msg = obj.get("message", {})
-                                cnt = msg.get("content")
-                                if isinstance(cnt, str) and cnt.strip():
-                                    titles[sid] = cnt.split("\n")[0][:60].strip()
-                                    break
-                                elif isinstance(cnt, list):
-                                    for item in cnt:
-                                        if isinstance(item, dict) and item.get("text"):
-                                            titles[sid] = item["text"].split("\n")[0][:60].strip()
-                                            break
-                                    if sid in titles:
-                                        break
+                                pass
                 except Exception:
                     pass
+
+        for p_dir in self.projects_dirs:
+            for p in glob.glob(os.path.join(p_dir, "*", "*.jsonl")):
+                sid = os.path.basename(p).replace(".jsonl", "")
+                if sid not in titles or titles[sid].startswith("/"):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            for line in f:
+                                try:
+                                    obj = json.loads(line)
+                                except Exception:
+                                    continue
+                                if obj.get("type") == "user":
+                                    msg = obj.get("message", {})
+                                    cnt = msg.get("content")
+                                    if isinstance(cnt, str) and cnt.strip():
+                                        titles[sid] = cnt.split("\n")[0][:60].strip()
+                                        break
+                                    elif isinstance(cnt, list):
+                                        for item in cnt:
+                                            if isinstance(item, dict) and item.get("text"):
+                                                titles[sid] = item["text"].split("\n")[0][:60].strip()
+                                                break
+                                        if sid in titles:
+                                            break
+                    except Exception:
+                        pass
         return titles, times
 
     def get_source_fingerprint(self) -> str:
@@ -84,14 +98,15 @@ class ClaudeAdapter(BaseAgentAdapter):
         if not self.is_available():
             return ""
         parts = []
-        hist = os.path.join(self.base_dir, "history.jsonl")
-        if os.path.exists(hist):
-            try:
-                st = os.stat(hist)
-                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
-            except OSError:
-                pass
-        hot = scan_files_fast(self.projects_dir, extensions=(".jsonl",), recursive=True, today_only=True)
+        for b in self.base_dirs:
+            hist = os.path.join(b, "history.jsonl")
+            if os.path.exists(hist):
+                try:
+                    st = os.stat(hist)
+                    parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+                except OSError:
+                    pass
+        hot = scan_files_fast(self.projects_dirs, extensions=(".jsonl",), recursive=True, today_only=True)
         parts.append(str(len(hot)))
         max_m = 0
         for h in hot:
@@ -123,7 +138,7 @@ class ClaudeAdapter(BaseAgentAdapter):
         daily_map = {}
         session_map = {}
 
-        files = scan_files_fast(self.projects_dir, extensions=(".jsonl",), recursive=True, today_only=today_only)
+        files = scan_files_fast(self.projects_dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             if not self._file_cache:

@@ -13,7 +13,7 @@ import glob
 import json
 import re
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex 的本地日志数据适配器"""
@@ -22,14 +22,26 @@ class CodexAdapter(BaseAgentAdapter):
     has_times = False
 
     def __init__(self):
-        """初始化目录结构"""
+        """初始化目录结构，支持跨环境多根探测"""
         super().__init__()
-        self.base_dir = os.path.expanduser("~/.codex")
-        self.sessions_dir = os.path.join(self.base_dir, "sessions")
+        self.base_dirs = [
+            os.path.join(h, ".codex")
+            for h in get_candidate_home_dirs()
+            if os.path.exists(os.path.join(h, ".codex"))
+        ]
+        if not self.base_dirs:
+            self.base_dirs = [os.path.expanduser("~/.codex")]
+        self.base_dir = self.base_dirs[0]
+        self.sessions_dirs = [
+            os.path.join(b, "sessions")
+            for b in self.base_dirs
+            if os.path.exists(os.path.join(b, "sessions"))
+        ]
+        self.sessions_dir = self.sessions_dirs[0] if self.sessions_dirs else os.path.join(self.base_dir, "sessions")
 
     def is_available(self) -> bool:
         """检查 codex 配置目录是否存在"""
-        return os.path.exists(self.base_dir)
+        return any(os.path.exists(b) for b in self.base_dirs)
 
     def get_titles_and_times(self) -> tuple[dict[str, str], dict[str, str]]:
         """从 session_index.jsonl 和会话文件中提取标题和时间"""
@@ -39,19 +51,20 @@ class CodexAdapter(BaseAgentAdapter):
             return titles, times
 
         index_map = {}
-        index_file = os.path.join(self.base_dir, "session_index.jsonl")
-        if os.path.exists(index_file):
-            try:
-                with open(index_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            row = json.loads(line)
-                            if "id" in row and row.get("thread_name"):
-                                index_map[row["id"]] = row["thread_name"].strip()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+        for b in self.base_dirs:
+            index_file = os.path.join(b, "session_index.jsonl")
+            if os.path.exists(index_file):
+                try:
+                    with open(index_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                row = json.loads(line)
+                                if "id" in row and row.get("thread_name"):
+                                    index_map[row["id"]] = row["thread_name"].strip()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
         def extract_codex_prompt(text):
             """内部辅助方法：提取 Codex prompt 文本"""
@@ -62,14 +75,25 @@ class CodexAdapter(BaseAgentAdapter):
             text = re.sub(r"<[^>]+>", "", text).strip()
             return " ".join(text.split())
 
-        session_files = glob.glob(os.path.join(self.sessions_dir, "**/*.jsonl"), recursive=True)
-        session_files += glob.glob(os.path.join(self.base_dir, "archived_sessions/*.jsonl"))
+        session_files = []
+        for sdir in self.sessions_dirs:
+            session_files.extend(glob.glob(os.path.join(sdir, "**", "*.jsonl"), recursive=True))
+        for b in self.base_dirs:
+            session_files.extend(glob.glob(os.path.join(b, "archived_sessions", "*.jsonl")))
 
         for p in session_files:
-            rel = p.replace(self.sessions_dir + "/", "").replace(".jsonl", "")
             base = os.path.basename(p).replace(".jsonl", "")
             parts = base.split("-")
             uuid = "-".join(parts[-5:]) if len(parts) >= 5 else base
+
+            rel = base
+            for sdir in self.sessions_dirs:
+                if p.startswith(sdir):
+                    try:
+                        rel = os.path.relpath(p, sdir).replace(".jsonl", "").replace("\\", "/")
+                    except ValueError:
+                        pass
+                    break
 
             title = index_map.get(uuid)
             if not title:
@@ -114,14 +138,19 @@ class CodexAdapter(BaseAgentAdapter):
         if not self.is_available():
             return ""
         parts = []
-        idx_path = os.path.join(self.base_dir, "session_index.jsonl")
-        if os.path.exists(idx_path):
-            try:
-                st = os.stat(idx_path)
-                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
-            except OSError:
-                pass
-        hot = scan_files_fast([self.sessions_dir, os.path.join(self.base_dir, "archived_sessions")], extensions=(".jsonl",), recursive=True, today_only=True)
+        scan_roots = list(self.sessions_dirs)
+        for b in self.base_dirs:
+            idx_path = os.path.join(b, "session_index.jsonl")
+            if os.path.exists(idx_path):
+                try:
+                    st = os.stat(idx_path)
+                    parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+                except OSError:
+                    pass
+            arch = os.path.join(b, "archived_sessions")
+            if os.path.isdir(arch):
+                scan_roots.append(arch)
+        hot = scan_files_fast(scan_roots, extensions=(".jsonl",), recursive=True, today_only=True)
         parts.append(str(len(hot)))
         max_m = 0
         for h in hot:
@@ -154,8 +183,12 @@ class CodexAdapter(BaseAgentAdapter):
         daily_map = {}
         session_map = {}
 
-        dirs = [self.sessions_dir, os.path.join(self.base_dir, "archived_sessions")]
-        session_files = scan_files_fast(dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
+        scan_roots = list(self.sessions_dirs)
+        for b in self.base_dirs:
+            arch = os.path.join(b, "archived_sessions")
+            if os.path.isdir(arch):
+                scan_roots.append(arch)
+        session_files = scan_files_fast(scan_roots, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
         with self._lock:
             if not self._file_cache:

@@ -68,47 +68,46 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple myccusage
 在终端运行以下命令，会自动在默认浏览器中打开看板：
 
 ```bash
-myccusage ui
+# 启动本地 Web 仪表盘
+ccu web
 # 或
-myccusage --web
+myccusage ui
 ```
 默认访问地址为 `http://127.0.0.1:8488`。
 
 ### 命令行（CLI）直接查看
 
-也可以直接在终端中以表格形式输出指定 Agent 的账本：
+现已全面支持极简短命令 **`ccu`**，支持直接传参、无需敲 `--`：
 
 ```bash
-# 查看 Antigravity 每日账本（默认）
-myccusage --agy
+# 1. 零参数速报（查看今日多 Agent 用量总览与花费）
+ccu
 
-# 查看 Claude Code 每日账本
-myccusage --claude
+# 2. 查看各 Agent 每日明细账本
+ccu agy             # Google Antigravity
+ccu claude          # Claude Code
+ccu codex           # OpenAI Codex
+ccu workbuddy       # WorkBuddy
+ccu grok            # Grok
 
-# 查看 Codex / Hermes / OpenCode / WorkBuddy
-myccusage --codex
-myccusage --hermes
-myccusage --opencode
-myccusage --workbuddy
+# 3. 查看项目全生命周期总览 (-s)
+ccu agy -s
 
-# 查看某 Agent 各项目生命周期总消耗
-myccusage --agy -s
-
-# 按 Token 消耗降序排列
-myccusage --agy -s -t
+# 4. 按 Token 消耗量降序排列 (-t)
+ccu agy -s -t
 ```
 
-#### 常用参数速查
+#### 常用命令速查
 
-| 参数 | 说明 |
-| :--- | :--- |
-| `ui` / `--web` | 启动本地 Web 仪表盘并打开浏览器 |
-| `--daemon` | 常驻后台服务模式（关闭页面不退出，供 Dock 宿主消费） |
-| `--no-open`, `-n` | 启动 Web 服务时不自动弹出浏览器 |
-| `--agy` / `--claude` / `--hermes` / ... | 指定要查看的 Agent |
-| `-d`, `--daily` | 每日账本模式（默认），按自然日切片并带有周小计 |
-| `-s`, `--session` | 项目总览模式，按会话累计生命周期总消耗 |
-| `-t`, `--tokens` | 按 Token 消耗从高到低排序 |
+| 极简命令 | 原长命令 | 说明 |
+| :--- | :--- | :--- |
+| `ccu` | `myccusage` | **今日速报**：查看今日各 Agent 汇总 Token、缓存命中率与花费 |
+| `ccu agy` | `myccusage --agy` | 查看 Antigravity 每日会话用量账本（默认按日切片） |
+| `ccu agy -s` | `myccusage --agy -s` | 查看 Antigravity 项目生命周期总览 |
+| `ccu claude` | `myccusage --claude` | 查看 Claude Code 每日账本 |
+| `ccu codex` | `myccusage --codex` | 查看 OpenAI Codex 账本 |
+| `ccu web` | `myccusage --web` | 一键启动本地 Web 仪表盘并自动打开浏览器 |
+| `ccu -t` | `myccusage -t` | 按 Token 消耗从高到低排序 |
 
 ---
 

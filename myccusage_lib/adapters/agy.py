@@ -16,7 +16,7 @@ import re
 import glob
 import sqlite3
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs
 
 def parse_proto(b: bytes) -> list[tuple[int, int, any]]:
     """
@@ -129,14 +129,16 @@ class AntigravityAdapter(BaseAgentAdapter):
 
     def __init__(self):
         super().__init__()
-        # 定义三大形态渠道: (标识, 基础目录, 标题protobuf文件, 标题后缀标签)
+        # 探测候选根目录下的三大形态渠道: (标识, 基础目录, 标题protobuf文件, 标题后缀标签)
         # APP 为主渠道默认无标签，非 APP 渠道分别追加 " (CLI)" 和 " (IDE)"
-        self.sources = [
-            ("app", os.path.expanduser("~/.gemini/antigravity"), "agyhub_summaries_proto.pb", ""),
-            ("cli", os.path.expanduser("~/.gemini/antigravity-cli"), "jetbox_summaries_proto.pb", " (CLI)"),
-            ("ide", os.path.expanduser("~/.gemini/antigravity-ide"), "agyhub_summaries_proto.pb", " (IDE)"),
-        ]
-        self.base_dir = self.sources[0][1]
+        self.sources = []
+        for h in get_candidate_home_dirs():
+            self.sources.extend([
+                ("app", os.path.join(h, ".gemini", "antigravity"), "agyhub_summaries_proto.pb", ""),
+                ("cli", os.path.join(h, ".gemini", "antigravity-cli"), "jetbox_summaries_proto.pb", " (CLI)"),
+                ("ide", os.path.join(h, ".gemini", "antigravity-ide"), "agyhub_summaries_proto.pb", " (IDE)"),
+            ])
+        self.base_dir = self.sources[0][1] if self.sources else os.path.expanduser("~/.gemini/antigravity")
         self.conv_dir = os.path.join(self.base_dir, "conversations")
         self.cache_dir = os.path.expanduser("~/.cache/myccusage")
 
@@ -203,7 +205,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                     pass
 
             # 2. 从 transcript.jsonl 补充或精确细化子任务标题
-            logs_glob = os.path.join(base_dir, "brain/*/.system_generated/logs/transcript.jsonl")
+            logs_glob = os.path.join(base_dir, "brain", "*", ".system_generated", "logs", "transcript.jsonl")
             for log_path in glob.glob(logs_glob):
                 parts = os.path.normpath(log_path).split(os.sep)
                 uid = ""
