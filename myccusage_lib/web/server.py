@@ -95,15 +95,22 @@ class ServerState:
     """
     has_client_connected = False  # 标记是否已有客户端连接过，避免刚启动未打开页面就直接触发退出
     last_heartbeat_time = 0.0     # 记录最后一次心跳的时间戳
-    server = None                 # HTTP 服务器实例引用，用于安全关闭
     shutdown_initiated = False    # 防止重复执行关机流程的标记
     HEARTBEAT_TIMEOUT = 6.0       # 6秒无心跳则判定所有网页已关闭，这是一个经过权衡的容错时间
+    STARTUP_GRACE = 60.0          # 启动后等待首个客户端连接的最长时间；期间始终无人访问则自动退出
 
-def watchdog_loop(server):
+def watchdog_loop(server, started_at=None):
     """
-    看门狗守护线程的工作逻辑。
-    定期检查心跳超时情况，以此判断前端页面是否全部关闭，实现“用完即走”的无感后台退出。
+    看门狗守护线程的工作逻辑，负责回收“无人使用”的服务进程，避免常驻残留。
+
+    覆盖两种情形：
+    1. 网页已关闭：曾有客户端连接，但心跳中断超过 HEARTBEAT_TIMEOUT（原有逻辑）；
+    2. 启动后始终无人访问：典型场景是端口被占用后自动降级到了别的端口（用户按原端口访问不到），
+       或带 --no-open 从终端启动后并未实际打开页面。由于 has_client_connected 是单向闩锁，
+       这类服务在旧实现下永远命中不了超时分支，从而变成无人回收的孤儿进程。
+       现在改为超过 STARTUP_GRACE 即自动退出。
     """
+    started_at = time.time() if started_at is None else started_at
     while not ServerState.shutdown_initiated:
         time.sleep(1.0)  # 每秒轮询一次，降低 CPU 占用
         if ServerState.has_client_connected:
@@ -115,6 +122,13 @@ def watchdog_loop(server):
                 # 在新线程中执行 shutdown，避免阻塞看门狗线程本身，也防止 HTTP Server 死锁
                 threading.Thread(target=server.shutdown, daemon=True).start()
                 break
+        elif time.time() - started_at > ServerState.STARTUP_GRACE:
+            # 启动至今从未收到任何客户端请求（连心跳都没有），判定为无人使用
+            ServerState.shutdown_initiated = True
+            print(f"\n⏱  启动后 {int(ServerState.STARTUP_GRACE)} 秒内始终无任何访问，"
+                  f"后台服务已自动退出（如需继续使用请重新启动）。")
+            threading.Thread(target=server.shutdown, daemon=True).start()
+            break
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     """
@@ -421,44 +435,62 @@ def start_server(port=8488, default_agent="agy", auto_open=True, daemon_mode=Fal
     """
     启动本地 HTTP 服务器，完成组件初始化并调度守护线程。
     """
-    # 端口自增重试逻辑：为了在默认端口被占用时自动降级寻找可用端口，无需用户手动介入
-    server_address = ("127.0.0.1", port)
+    requested_port = port
+
+    # 端口绑定策略按启动模式区分：
+    # - daemon 模式由 macOS 程序屋以固定端口拉起（main.swift 硬编码 8488 并据此探测复用），
+    #   降级到相邻端口毫无意义 —— 调用方只会连原端口，降级出来的进程必然无人连接；
+    #   因此只尝试请求的端口，被占用就立即失败退出（程序屋探测失败时会自行处理）。
+    # - 非 daemon 模式是用户手动启动，保留自动降级能力，但会在横幅中给出醒目提示，
+    #   并由看门狗的启动宽限期兜底回收，避免留下无人使用的常驻进程。
+    candidates = (requested_port,) if daemon_mode else range(requested_port, requested_port + 10)
     server = None
-    for p in range(port, port + 10):
+    for p in candidates:
         try:
-            server_address = ("127.0.0.1", p)
             # 使用 ThreadingHTTPServer 支持并发请求处理，避免阻塞
-            server = ThreadingHTTPServer(server_address, DashboardRequestHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", p), DashboardRequestHandler)
             port = p
             break
         except OSError:
             continue  # 尝试下一个端口
 
-    if not server:
-        print(f"❌ 无法绑定端口 {port} ~ {port + 9}，请使用 --port 指定其他可用端口", file=sys.stderr)
+    if server is None:
+        if daemon_mode:
+            print(f"❌ 端口 {requested_port} 已被占用，守护服务退出（程序屋依赖固定端口，不做降级）。",
+                  file=sys.stderr)
+        else:
+            print(f"❌ 端口 {requested_port} ~ {requested_port + 9} 均无法绑定，"
+                  f"请使用 --port 指定其他可用端口", file=sys.stderr)
         sys.exit(1)
 
+    port_drifted = port != requested_port
     url = f"http://127.0.0.1:{port}"
     print("=" * 78)
     print("  🚀 myccusage Web Dashboard 已启动")
     print("=" * 78)
     print(f"  📡 本地地址: {url}")
+    if port_drifted:
+        print(f"  ⚠️  端口 {requested_port} 已被占用，已自动改用 {port}；本服务不在 {requested_port} 上")
     print(f"  📊 默认 Agent: {SUPPORTED_AGENTS.get(default_agent, {}).get('name', default_agent)}")
     if daemon_mode:
         print("  💡 运行模式: 常驻守护服务 (Dock 宿主守护中，按 Ctrl+C 停止)")
     else:
         print("  💡 按 Ctrl+C 停止服务，或直接关闭浏览器网页自动退出")
+        if not auto_open:
+            print(f"  ⏱  启动后 {int(ServerState.STARTUP_GRACE)} 秒内无任何访问将自动退出")
     print("=" * 78)
+    # 启动横幅（含端口漂移警告）是关键信息，且常被重定向到日志文件，
+    # 而 stdout 重定向时默认是块缓冲 → 显式 flush，保证立即可见
+    sys.stdout.flush()
 
-    # 注册全局状态，使得其他线程（如看门狗）能够安全访问当前服务器实例
-    ServerState.server = server
+    # 重置看门狗状态
     ServerState.has_client_connected = False
     ServerState.last_heartbeat_time = time.time()
     ServerState.shutdown_initiated = False
 
-    # 启动看门狗守护线程 (仅在非 daemon 模式下启用网页关闭联动退出)
+    # 启动看门狗守护线程 (仅在非 daemon 模式：网页关闭、或启动后始终无人访问时自动退出)
     if not daemon_mode:
-        watchdog = threading.Thread(target=watchdog_loop, args=(server,), daemon=True)
+        watchdog = threading.Thread(target=watchdog_loop, args=(server, time.time()), daemon=True)
         watchdog.start()
 
     # 启动后台异步预热线程 (预热全景看板与默认 Agent，实现首屏秒开体验)
