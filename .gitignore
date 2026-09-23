@@ -8,3 +8,6 @@ dist/
 macos/*.iconset/
 macos/*-bin
 .workbuddy/
+
+# 由 scripts/generate_cover.py 生成的媒体产物（可随时重新生成，不入库）
+docs/images/xhs-cover.png

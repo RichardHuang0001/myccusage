@@ -39,6 +39,9 @@ from ..sync import (
 # 定位静态资源目录，使用绝对路径以避免运行目录不同导致的文件找不到问题
 STATIC_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
 
+# 唯一被放行的跨域来源主机名：仅本地回环 (任意端口，兼容本地 dev server 调试)
+_ALLOWED_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 class DataCache:
     """
     轻量线程安全内存缓存池:
@@ -125,6 +128,29 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if len(args) >= 2 and str(args[1]) not in ("200", "304"):
             sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
 
+    def _cors_origin(self) -> str:
+        """
+        解析并放行跨域来源 (仅限本地回环)。
+
+        安全边界：本服务只面向本机使用，且暴露的是用户的会话标题与用量等隐私数据。
+        早期实现对一切响应都回 ``Access-Control-Allow-Origin: *``，这会让用户访问的
+        任意网页都能通过浏览器跨域读取 127.0.0.1 上的接口，并伪造 POST 请求触发同步
+        等写操作 (CSRF)，与「本地隐私零泄露」的产品定位直接冲突。
+
+        现行策略：
+        - 同源请求 (浏览器不发 Origin) → 无需任何 CORS 头；
+        - 回环来源 (127.0.0.1 / localhost / [::1]，任意端口，兼容本地 dev server) → 回显放行；
+        - 其它一切外部来源 → 不回 CORS 头，浏览器侧即拒绝其读取响应。
+        """
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return ""
+        try:
+            host = urlparse(origin).hostname or ""
+        except ValueError:
+            return ""
+        return origin if host in _ALLOWED_ORIGIN_HOSTS else ""
+
     def send_json(self, data, status=200):
         """
         统一封装 JSON 响应发送逻辑，处理 CORS 头和防缓存机制。
@@ -133,17 +159,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")  # 允许跨域，方便前端在 dev 模式下调试
+        allowed_origin = self._cors_origin()
+        if allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")  # 强力防缓存，确保每次拿到最新数据
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         """
-        处理 CORS 预检请求。
+        处理 CORS 预检请求 (同样只放行本地回环来源)。
         """
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        allowed_origin = self._cors_origin()
+        if allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -301,18 +333,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         # 1. API 路由设计
-        if path == "/api/agents":
-            # 返回所有支持的 Agent 列表，动态生成导航菜单
-            agents_list = []
-            for k, v in SUPPORTED_AGENTS.items():
-                agents_list.append({
-                    "id": k,
-                    "name": v["name"],
-                    "subcmd": v["subcmd"]
-                })
-            self.send_json({"agents": agents_list})
-            return
-
         if path == "/api/all":
             # 返回全局概览数据，优先走缓存以应对并发请求
             try:
@@ -354,6 +374,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(data)
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
+            return
+
+        # 未匹配的 API 路径必须返回 404 JSON。
+        # 否则它会落到下方的 SPA 静态回退里，让前端"接口名拼错/接口已下线"这类问题
+        # 表现为 200 + HTML，最终只在浏览器里报一个难以定位的 JSON 解析错误。
+        if path.startswith("/api/"):
+            self.send_json({"error": f"未知接口: {path}"}, 404)
             return
 
         # 2. 静态文件路由服务

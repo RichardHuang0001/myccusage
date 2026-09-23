@@ -17,7 +17,6 @@ class ClaudeAdapter(BaseAgentAdapter):
     """Claude Code 适配器，处理本地历史日志文件"""
     agent_id = "claude"
     display_name = "Claude Code"
-    has_times = False
 
     def __init__(self):
         """初始化 Claude 配置目录路径，支持跨环境多根探测"""
@@ -130,13 +129,11 @@ class ClaudeAdapter(BaseAgentAdapter):
         fp = self.get_source_fingerprint()
 
         # 全量模式下检查整体缓存
-        if not today_only:
-            with self._lock:
-                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
-                    return self._full_cache[1]
+        cached = self._cached_full_result(fp, today_only)
+        if cached is not None:
+            return cached
 
-        daily_map = {}
-        session_map = {}
+        all_records = []
 
         files = scan_files_fast(self.projects_dirs, extensions=(".jsonl",), recursive=True, today_only=today_only)
 
@@ -209,53 +206,12 @@ class ClaudeAdapter(BaseAgentAdapter):
                         self._file_cache[fpath] = (mtime, size, records)
                         cache_modified = True
 
-                for sid, date_str, iso_str, inp, cr, out, tot in records:
-                    # 每日切片数据聚合
-                    if date_str not in daily_map:
-                        daily_map[date_str] = {}
-                    if sid not in daily_map[date_str]:
-                        daily_map[date_str][sid] = {
-                            "sessionId": sid,
-                            "date": date_str,
-                            "inputTokens": 0,
-                            "cacheReadTokens": 0,
-                            "outputTokens": 0,
-                            "totalTokens": 0,
-                            "lastActivity": iso_str
-                        }
-                    ds = daily_map[date_str][sid]
-                    ds["inputTokens"] += inp
-                    ds["cacheReadTokens"] += cr
-                    ds["outputTokens"] += out
-                    ds["totalTokens"] += tot
-                    if iso_str > ds["lastActivity"]:
-                        ds["lastActivity"] = iso_str
-
-                    # 项目生命周期汇总 (全生命周期累加计算)
-                    if sid not in session_map:
-                        session_map[sid] = {
-                            "sessionId": sid,
-                            "inputTokens": 0,
-                            "cacheReadTokens": 0,
-                            "outputTokens": 0,
-                            "totalTokens": 0,
-                            "lastActivity": iso_str
-                        }
-                    ss = session_map[sid]
-                    ss["inputTokens"] += inp
-                    ss["cacheReadTokens"] += cr
-                    ss["outputTokens"] += out
-                    ss["totalTokens"] += tot
-                    if iso_str > ss["lastActivity"]:
-                        ss["lastActivity"] = iso_str
+                all_records.extend(records)
 
             if cache_modified and not today_only:
                 self._save_persisted_file_cache()
 
-        daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
-        session_res = list(session_map.values())
-        if not today_only:
-            with self._lock:
-                self._full_cache = (fp, (daily_res, session_res))
+        daily_res, session_res = self._accumulate_records(all_records)
+        self._store_full_result(fp, daily_res, session_res, today_only)
         return daily_res, session_res
 

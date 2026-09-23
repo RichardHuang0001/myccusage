@@ -20,7 +20,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .adapters import ADAPTERS, get_adapter
+from .adapters import ADAPTERS
 
 # 线程锁与全局缓存
 _SYNC_LOCK = threading.Lock()

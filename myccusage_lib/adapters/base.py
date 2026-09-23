@@ -86,7 +86,6 @@ class BaseAgentAdapter:
     """Agent 适配器基类，所有具体的 Agent 适配器都应继承此类"""
     agent_id = ""
     display_name = ""
-    has_times = False
 
     def __init__(self):
         """初始化基础适配器，设置防抖缓存和线程锁"""
@@ -96,6 +95,92 @@ class BaseAgentAdapter:
         self._full_cache = (None, (None, None))
         # 线程安全锁，保护缓存并发读写
         self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # 子类共用实现：消除 8 个适配器之间的逐字重复
+    # ------------------------------------------------------------------
+
+    def _cached_full_result(self, fingerprint: str, today_only: bool):
+        """
+        命中进程内全量缓存时返回 (daily_map, session_list)，未命中返回 None。
+
+        today_only 模式产出的是"仅今日热文件"的局部切片，与全量扫描结果语义不同，
+        因此该模式既不读取也不写入全量缓存，避免两种口径互相污染。
+        """
+        if today_only:
+            return None
+        with self._lock:
+            if self._full_cache[0] == fingerprint and self._full_cache[1][0] is not None:
+                return self._full_cache[1]
+        return None
+
+    def _store_full_result(self, fingerprint: str, daily_map, session_list, today_only: bool) -> None:
+        """全量扫描完成后写入进程内缓存 (today_only 模式不写入)。"""
+        if today_only:
+            return
+        with self._lock:
+            self._full_cache = (fingerprint, (daily_map, session_list))
+
+    @staticmethod
+    def _accumulate_records(records) -> tuple[dict[str, list[dict]], list[dict]]:
+        """
+        把记录流聚合为 (daily_map, session_list)：
+        - records 元素为 (sessionId, 日期, ISO时间, 输入Token, 缓存读Token, 输出Token, 合计Token)
+        - daily_map: { "YYYY-MM-DD": [ 当日会话切片, ... ] }，同日同会话自动合并累加
+        - session_list: 每个会话的全生命周期累计
+
+        6 个适配器 (agy/claude/codex/grok/pi/workbuddy) 共用完全相同的聚合算法，
+        集中在此实现，避免逐字复制导致的"改一处漏五处"。
+
+        实现说明：相比 `if key not in d: d[key] = X` 再取值的写法，这里统一用
+        dict.get() 单次查找 + 局部变量缓存，可减少每条约 2~3 次哈希查找，
+        在数万条记录的解析路径上是净收益。
+        """
+        daily: dict[str, dict[str, dict]] = {}
+        sessions: dict[str, dict] = {}
+
+        for sid, date_str, iso_str, inp, cr, out, tot in records:
+            # 1) 每日切片累加
+            day = daily.get(date_str)
+            if day is None:
+                day = daily[date_str] = {}
+            ds = day.get(sid)
+            if ds is None:
+                ds = day[sid] = {
+                    "sessionId": sid,
+                    "date": date_str,
+                    "inputTokens": 0,
+                    "cacheReadTokens": 0,
+                    "outputTokens": 0,
+                    "totalTokens": 0,
+                    "lastActivity": iso_str,
+                }
+            ds["inputTokens"] += inp
+            ds["cacheReadTokens"] += cr
+            ds["outputTokens"] += out
+            ds["totalTokens"] += tot
+            if iso_str > ds["lastActivity"]:
+                ds["lastActivity"] = iso_str
+
+            # 2) 会话全生命周期累加
+            ss = sessions.get(sid)
+            if ss is None:
+                ss = sessions[sid] = {
+                    "sessionId": sid,
+                    "inputTokens": 0,
+                    "cacheReadTokens": 0,
+                    "outputTokens": 0,
+                    "totalTokens": 0,
+                    "lastActivity": iso_str,
+                }
+            ss["inputTokens"] += inp
+            ss["cacheReadTokens"] += cr
+            ss["outputTokens"] += out
+            ss["totalTokens"] += tot
+            if iso_str > ss["lastActivity"]:
+                ss["lastActivity"] = iso_str
+
+        return ({d: list(day.values()) for d, day in daily.items()}, list(sessions.values()))
 
     def _load_persisted_file_cache(self):
         """从本地磁盘快速加载文件级防抖缓存 (JSON 格式，< 10ms)"""

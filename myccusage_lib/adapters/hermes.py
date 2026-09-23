@@ -15,7 +15,6 @@ class HermesAdapter(BaseAgentAdapter):
     """Hermes Agent 适配器，通过直连 SQLite 数据库进行高速查询"""
     agent_id = "hermes"
     display_name = "Hermes Agent"
-    has_times = True
 
     def __init__(self):
         """初始化数据库连接路径，支持跨环境多根探测"""
@@ -92,10 +91,9 @@ class HermesAdapter(BaseAgentAdapter):
 
         fp = self.get_source_fingerprint()
 
-        if not today_only:
-            with self._lock:
-                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
-                    return self._full_cache[1]
+        cached = self._cached_full_result(fp, today_only)
+        if cached is not None:
+            return cached
 
         daily_map = {}
         session_list = []
@@ -163,8 +161,6 @@ class HermesAdapter(BaseAgentAdapter):
             except Exception:
                 pass
 
-        if not today_only:
-            with self._lock:
-                self._full_cache = (fp, (daily_map, session_list))
+        self._store_full_result(fp, daily_map, session_list, today_only)
 
         return daily_map, session_list

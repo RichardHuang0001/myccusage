@@ -16,7 +16,7 @@ import re
 import glob
 import sqlite3
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
 
 def parse_proto(b: bytes) -> list[tuple[int, int, any]]:
     """
@@ -125,7 +125,6 @@ class AntigravityAdapter(BaseAgentAdapter):
     """Google Antigravity 100% 纯 Python 原生数据适配器 (支持 App + CLI + IDE 三大形态)"""
     agent_id = "agy"
     display_name = "Google Antigravity"
-    has_times = False
 
     def __init__(self):
         super().__init__()
@@ -321,13 +320,11 @@ class AntigravityAdapter(BaseAgentAdapter):
         fp = self.get_source_fingerprint()
 
         # 全量模式下检查整体缓存
-        if not today_only:
-            with self._lock:
-                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
-                    return self._full_cache[1]
+        cached = self._cached_full_result(fp, today_only)
+        if cached is not None:
+            return cached
 
-        daily_map = {}
-        session_map = {}
+        all_records = []
 
         conv_dirs = [
             os.path.join(b, "conversations")
@@ -392,53 +389,12 @@ class AntigravityAdapter(BaseAgentAdapter):
 
 
                 # 聚合计算
-                for sid, date_str, iso_str, inp, cr, out, tot in records:
-                    # 1. 每日精准切片
-                    if date_str not in daily_map:
-                        daily_map[date_str] = {}
-                    if sid not in daily_map[date_str]:
-                        daily_map[date_str][sid] = {
-                            "sessionId": sid,
-                            "date": date_str,
-                            "inputTokens": 0,
-                            "cacheReadTokens": 0,
-                            "outputTokens": 0,
-                            "totalTokens": 0,
-                            "lastActivity": iso_str,
-                        }
-                    ds = daily_map[date_str][sid]
-                    ds["inputTokens"] += inp
-                    ds["cacheReadTokens"] += cr
-                    ds["outputTokens"] += out
-                    ds["totalTokens"] += tot
-                    if iso_str > ds["lastActivity"]:
-                        ds["lastActivity"] = iso_str
-
-                    # 2. 全周期会话累计
-                    if sid not in session_map:
-                        session_map[sid] = {
-                            "sessionId": sid,
-                            "inputTokens": 0,
-                            "cacheReadTokens": 0,
-                            "outputTokens": 0,
-                            "totalTokens": 0,
-                            "lastActivity": iso_str,
-                        }
-                    ss = session_map[sid]
-                    ss["inputTokens"] += inp
-                    ss["cacheReadTokens"] += cr
-                    ss["outputTokens"] += out
-                    ss["totalTokens"] += tot
-                    if iso_str > ss["lastActivity"]:
-                        ss["lastActivity"] = iso_str
+                all_records.extend(records)
 
             if cache_modified and not today_only:
                 self._save_persisted_file_cache()
 
-        daily_res = {d: list(s_dict.values()) for d, s_dict in daily_map.items()}
-        session_res = list(session_map.values())
-        if not today_only:
-            with self._lock:
-                self._full_cache = (fp, (daily_res, session_res))
+        daily_res, session_res = self._accumulate_records(all_records)
+        self._store_full_result(fp, daily_res, session_res, today_only)
         return daily_res, session_res
 

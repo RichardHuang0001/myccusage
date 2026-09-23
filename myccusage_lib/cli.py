@@ -27,7 +27,6 @@ if sys.platform == "win32":
         pass
 
 from .core import (
-    SUPPORTED_AGENTS,
     get_daily_data,
     get_session_data,
     get_today_quick_summary,
@@ -466,7 +465,7 @@ def render_quick_summary(summary):
 
     print("=" * total_table_width)
     print(f"  myccusage 今日用量速报 ({summary['date']})")
-    print(f"  * 计价基准：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
+    print("  * 计价基准：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
     print("=" * total_table_width)
 
     tot_str = format_tokens(summary.get("totalTokens", 0)).strip()
@@ -605,8 +604,7 @@ def handle_cli_sync(args: list[str]):
         trigger_sync,
         load_sync_config,
         is_sync_enabled,
-        load_remote_devices_data,
-        get_default_device_id
+        load_remote_devices_data
     )
 
     if "--init" in args or "-i" in args:
@@ -710,7 +708,6 @@ def main(raw_args=None):
     web_port = 8488
     is_daemon = False
     auto_open = True
-    clean_args = []
 
     # 手动解析命令行参数（避免依赖外部库的复杂逻辑，支持灵活标志位置）
     i = 0
@@ -762,8 +759,12 @@ def main(raw_args=None):
         elif a in ("--tokens", "-t", "tokens"):
             sort_by_tokens = True
         else:
-            # 收集未被识别的参数，可能传递给底层方法作透传用途
-            clean_args.append(a)
+            # 未识别的参数直接报错退出。
+            # 历史行为是静默收集后透传给已废弃的外部 ccusage CLI，导致
+            # 参数拼写错误（如 --claud）被无声忽略、命令照常执行，用户难以察觉。
+            print(f"\n❌ 未知参数: {a}", file=sys.stderr)
+            print_usage_hint()
+            sys.exit(2)
         i += 1
 
     # 如果激活了 Dock 模式，调度到 macOS 原生程序坞构建与拉起逻辑
@@ -789,7 +790,7 @@ def main(raw_args=None):
     try:
         # 基于模式选择对应的数据拉取和表格渲染逻辑
         if mode == "session":
-            data = get_session_data(agent_type, sort_by_tokens=sort_by_tokens, clean_args=clean_args)
+            data = get_session_data(agent_type, sort_by_tokens=sort_by_tokens)
             render_session_table(data)
         else:
             data = get_daily_data(agent_type, sort_by_tokens=sort_by_tokens)

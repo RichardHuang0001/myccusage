@@ -15,7 +15,6 @@ class OpenCodeAdapter(BaseAgentAdapter):
     """OpenCode 原生适配器，读取 SQLite 获取数据"""
     agent_id = "opencode"
     display_name = "OpenCode"
-    has_times = True
 
     def __init__(self):
         """初始化 OpenCode 数据库路径，支持跨环境多根探测"""
@@ -88,10 +87,9 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
         fp = self.get_source_fingerprint()
 
-        if not today_only:
-            with self._lock:
-                if self._full_cache[0] == fp and self._full_cache[1][0] is not None:
-                    return self._full_cache[1]
+        cached = self._cached_full_result(fp, today_only)
+        if cached is not None:
+            return cached
 
         daily_map_dict = {}
         session_map_dict = {}
@@ -278,8 +276,6 @@ class OpenCodeAdapter(BaseAgentAdapter):
         daily_map = {d: list(s_dict.values()) for d, s_dict in daily_map_dict.items()}
         session_list = list(session_map_dict.values())
 
-        if not today_only:
-            with self._lock:
-                self._full_cache = (fp, (daily_map, session_list))
+        self._store_full_result(fp, daily_map, session_list, today_only)
 
         return daily_map, session_list

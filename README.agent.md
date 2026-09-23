@@ -192,19 +192,21 @@ myccusage/
 ### 2.1 `myccusage_lib/core.py` (数据内核与元数据提取)
 
 #### 全局常量与注册表：
-- `SUPPORTED_AGENTS`:
+- `SUPPORTED_AGENTS`（仅登记展示名；8 个 Agent 均具备专属原生适配器，不存在外部 CLI 回退路径）：
   ```python
   SUPPORTED_AGENTS = {
-      "agy": {"name": "Google Antigravity", "subcmd": "antigravity", "has_times": False},
-      "claude": {"name": "Claude Code", "subcmd": "claude", "has_times": False},
-      "hermes": {"name": "Hermes Agent", "subcmd": "hermes", "has_times": True},
-      "codex": {"name": "OpenAI Codex", "subcmd": "codex", "has_times": False},
-      "grok": {"name": "Grok", "subcmd": "grok", "has_times": False},
-      "pi": {"name": "Pi Agent", "subcmd": "pi", "has_times": False},
-      "opencode": {"name": "OpenCode", "subcmd": "opencode", "has_times": True},
-      "workbuddy": {"name": "WorkBuddy", "subcmd": "workbuddy", "has_times": True},
+      "agy": {"name": "Google Antigravity"},
+      "claude": {"name": "Claude Code"},
+      "hermes": {"name": "Hermes Agent"},
+      "codex": {"name": "OpenAI Codex"},
+      "grok": {"name": "Grok"},
+      "pi": {"name": "Pi Agent"},
+      "opencode": {"name": "OpenCode"},
+      "workbuddy": {"name": "WorkBuddy"},
   }
   ```
+- `USD_CNY_RATE`：人民币兑美元参考汇率，仅用于把 CNY 等效费用换算为 USD 展示值。
+- `ADAPTERS`（定义于 `myccusage_lib/adapters/__init__.py`）：Agent ID → 适配器实例，键集必须与 `SUPPORTED_AGENTS` 完全一致。
 
 #### 核心数据处理接口：
 - `get_daily_data(agent_type: str, sort_by_tokens: bool = False) -> dict`
@@ -289,11 +291,7 @@ myccusage/
    导入并加入 `ADAPTERS["cursor"] = CursorAdapter()`。
 3. **在 `myccusage_lib/core.py` 的 `SUPPORTED_AGENTS` 注册显示信息**：
    ```python
-   SUPPORTED_AGENTS["cursor"] = {
-       "name": "Cursor IDE",
-       "subcmd": "cursor",
-       "has_times": False
-   }
+   SUPPORTED_AGENTS["cursor"] = {"name": "Cursor IDE"}
    ```
 4. **在 `cli.py` 添加参数映射**：
    在 `main()` 参数解析部分增加 `--cursor` 选项，并更新 `print_usage_hint()`。
