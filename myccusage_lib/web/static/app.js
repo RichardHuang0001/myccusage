@@ -2232,6 +2232,14 @@
           legend: { display: false },
           tooltip: {
             callbacks: {
+              title: function (items) {
+                if (!items.length) return '';
+                const idx = items[0].dataIndex;
+                const d = trend[idx];
+                if (!d) return items[0].label;
+                const totalTokens = (d.outputTokens || 0) + (d.inputTokens || 0) + (d.cacheTokens || 0);
+                return `${d.date.slice(5)}(${d.weekday})  ${formatTokens(totalTokens)}`;
+              },
               label: function (ctx) {
                 if (ctx.dataset.yAxisID === 'yCost') {
                   const val = ctx.raw;
