@@ -40,8 +40,82 @@
       </div>
 
       <div class="nav-right">
-        <button class="btn btn-icon" id="btnRefresh" title="清除今日缓存并刷新数据">
-          <span class="icon">🔄</span>
+        <div class="sync-nav-wrapper">
+          <div class="sync-nav-group">
+            <button class="btn" id="btnSync" title="多端 Git 私有同步 (点击立即同步增量)">
+              <span class="btn-text" id="syncBtnText">同步</span>
+            </button>
+            <button class="btn btn-sync-settings" id="btnSyncSettings" title="管理多端同步设置与已连接设备" type="button">
+              ⚙️
+            </button>
+          </div>
+
+          <!-- 多端同步流程进度与报错反馈气泡 (Sync Progress Bubble) -->
+          <div class="sync-popover" id="syncPopover" style="display: none;">
+            <div class="sync-popover-arrow"></div>
+            <div class="sync-popover-header">
+              <div class="sync-popover-title-row">
+                <span class="sync-popover-dot" id="syncPopoverDot"></span>
+                <span class="sync-popover-title" id="syncPopoverTitle">多端同步进度</span>
+              </div>
+              <button class="sync-popover-close" id="btnCloseSyncPopover" type="button" title="关闭气泡">✕</button>
+            </div>
+
+            <div class="sync-step-list">
+              <div class="sync-step-item" id="syncStep_pull" data-step="pull">
+                <span class="step-icon" id="syncStepIcon_pull">⚪</span>
+                <div class="step-content">
+                  <div class="step-title">1. 拉取远端异机账本</div>
+                  <div class="step-detail" id="syncStepDetail_pull">等待中...</div>
+                </div>
+                <span class="step-badge" id="syncStepBadge_pull">等待</span>
+              </div>
+
+              <div class="sync-step-item" id="syncStep_export" data-step="export">
+                <span class="step-icon" id="syncStepIcon_export">⚪</span>
+                <div class="step-content">
+                  <div class="step-title">2. 聚合本机用量快照</div>
+                  <div class="step-detail" id="syncStepDetail_export">增量吸收保护</div>
+                </div>
+                <span class="step-badge" id="syncStepBadge_export">等待</span>
+              </div>
+
+              <div class="sync-step-item" id="syncStep_commit" data-step="commit">
+                <span class="step-icon" id="syncStepIcon_commit">⚪</span>
+                <div class="step-content">
+                  <div class="step-title">3. 本地 Git 分片提交</div>
+                  <div class="step-detail" id="syncStepDetail_commit">原子化存储</div>
+                </div>
+                <span class="step-badge" id="syncStepBadge_commit">等待</span>
+              </div>
+
+              <div class="sync-step-item" id="syncStep_push" data-step="push">
+                <span class="step-icon" id="syncStepIcon_push">⚪</span>
+                <div class="step-content">
+                  <div class="step-title">4. 推送至 GitHub 仓库</div>
+                  <div class="step-detail" id="syncStepDetail_push">安全增量上云</div>
+                </div>
+                <span class="step-badge" id="syncStepBadge_push">等待</span>
+              </div>
+
+              <div class="sync-step-item" id="syncStep_merge" data-step="merge">
+                <span class="step-icon" id="syncStepIcon_merge">⚪</span>
+                <div class="step-content">
+                  <div class="step-title">5. 跨端度量融合就绪</div>
+                  <div class="step-detail" id="syncStepDetail_merge">内存就绪</div>
+                </div>
+                <span class="step-badge" id="syncStepBadge_merge">等待</span>
+              </div>
+            </div>
+
+            <!-- 异常与报错详情卡片 -->
+            <div class="sync-popover-error" id="syncPopoverError" style="display: none;">
+              <div class="error-title">⚠️ 同步异常告警</div>
+              <div class="error-msg" id="syncPopoverErrorMsg"></div>
+            </div>
+          </div>
+        </div>
+        <button class="btn" id="btnRefresh" title="清除今日缓存并刷新数据">
           <span class="btn-text">刷新</span>
         </button>
         <button class="btn btn-icon" id="btnThemeToggle" title="切换深色/浅色主题">
@@ -325,7 +399,7 @@
     <!-- 底部状态栏 -->
     <footer class="footer">
       <div class="footer-left">
-        <span>myccusage v1.5.1</span>
+        <span>myccusage v1.6.0</span>
         <span class="divider">|</span>
         <span>本地缓存源: <code>~/.cache/myccusage/</code></span>
       </div>
@@ -490,6 +564,88 @@ note: 官方标准计费 (输入 $3/M | 缓存 $0.3/M | 输出 $15/M)"></textare
       <div class="modal-footer">
         <button class="btn btn-ghost" id="btnCancelAddModal" type="button">取消</button>
         <button class="btn btn-primary" id="btnConfirmImportModel" type="button" disabled>确认导入并应用</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 多端 Git 私有同步管理与设置弹窗 -->
+  <div class="modal-backdrop" id="syncModal" style="display: none;">
+    <div class="modal-dialog modal-md">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 class="modal-title">☁️ 多端 Git 私有同步</h3>
+          <span class="modal-subtitle">去中心化轻量账本同步 · 零云服务器 · 跨端无感融合</span>
+        </div>
+        <button class="modal-close-btn" id="btnCloseSyncModal" type="button" title="关闭窗口">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- 未配置状态界面 -->
+        <div id="syncSetupView" style="display: none;">
+          <div class="sync-intro-box">
+            <p class="sync-tip-text">
+              只需提供一个您的 <strong>GitHub 私有空仓库</strong>（例如 <code>git@github.com:user/myccusage-sync.git</code> 或 HTTPS 地址）。
+              系统将通过设备独立分片自动汇聚各机器的历史账本，<strong>绝不上传私有代码与原始对话日志</strong>。
+            </p>
+          </div>
+          <div class="form-group" style="margin-top: 14px;">
+            <label for="syncRepoUrl">私有 Git 仓库地址 (SSH 或 HTTPS):</label>
+            <input type="text" id="syncRepoUrl" class="form-control" placeholder="git@github.com:username/my-usage-sync.git" />
+          </div>
+          <div class="form-row" style="margin-top: 12px; display: flex; gap: 12px;">
+            <div class="form-group" style="flex: 1;">
+              <label for="syncDeviceName">当前设备显示名称:</label>
+              <input type="text" id="syncDeviceName" class="form-control" placeholder="MacBook Air" />
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label for="syncDeviceId">设备唯一标识码 (已自动生成):</label>
+              <input type="text" id="syncDeviceId" class="form-control" placeholder="自动生成 (如 macbook-air-mac)" />
+              <span class="form-hint" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; display: block;">已根据设备名与系统自动生成，无需重复输入；如需自定义可微调</span>
+            </div>
+          </div>
+          <div class="sync-action-bar" style="margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" id="btnCancelSyncSetup" type="button">取消</button>
+            <button class="btn btn-primary" id="btnConfirmSyncSetup" type="button">
+              <span>🔗 连接并同步首次数据</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 已配置状态界面 -->
+        <div id="syncManageView" style="display: none;">
+          <div class="sync-status-card">
+            <div class="sync-status-row" style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="sync-status-badge active" id="syncStatusBadge">🟢 已连接私有同步库</span>
+              <span class="sync-last-time" id="syncLastTime" style="font-size: 0.8rem; color: var(--text-muted);">上次同步: 刚刚</span>
+            </div>
+            <div class="sync-details-list" style="margin-top: 12px; font-size: 0.85rem; display: flex; flex-direction: column; gap: 6px;">
+              <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+                <span class="detail-label" style="color: var(--text-muted);">当前设备:</span>
+                <span class="detail-val" id="syncCurrentDeviceDisplay" style="font-weight: 500;">--</span>
+              </div>
+              <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+                <span class="detail-label" style="color: var(--text-muted);">绑定仓库:</span>
+                <span class="detail-val font-mono" id="syncRepoUrlDisplay" style="font-size: 0.8rem; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sync-section-title" style="margin-top: 18px; margin-bottom: 8px; font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">
+            🖥️ 已同步异机列表 (<span id="syncDeviceCount">0</span>)
+          </div>
+          <div class="sync-device-list" id="syncDeviceList" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;">
+            <!-- 动态渲染设备卡片 -->
+          </div>
+
+          <div class="sync-action-bar" style="margin-top: 22px; display: flex; justify-content: space-between; align-items: center;">
+            <button class="btn btn-danger-outline btn-sm" id="btnUnbindSync" type="button">解除绑定</button>
+            <div style="display: flex; gap: 10px;">
+              <button class="btn btn-secondary" id="btnCloseSyncView" type="button">关闭</button>
+              <button class="btn btn-primary" id="btnTriggerModalSync" type="button">
+                <span>🔄 立即同步增量</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

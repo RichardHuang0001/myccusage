@@ -545,6 +545,9 @@ def print_usage_hint():
     print("  ccu claude                    # Claude Code 每日会话账本")
     print("  ccu codex -s                  # Codex 项目全生命周期总览")
     print("  ccu web                       # 一键启动 Web 仪表盘")
+    print("  ccu sync                      # 一键执行多端 Git 数据同步 (拉取/合并/推送)")
+    print("  ccu sync --init <git_url>     # 首次绑定私有同步仓库")
+    print("  ccu sync --status             # 查看当前设备与多端同步状态")
     print("=" * 78)
 
 def launch_macos_dock_app():
@@ -595,6 +598,85 @@ def launch_macos_dock_app():
     else:
         print("❌ 启动失败，未找到可运行的 myccusage.app")
 
+def handle_cli_sync(args: list[str]):
+    """处理 ccu sync 多端同步命令行交互"""
+    from .sync import (
+        init_sync_repo,
+        trigger_sync,
+        load_sync_config,
+        is_sync_enabled,
+        load_remote_devices_data,
+        get_default_device_id
+    )
+
+    if "--init" in args or "-i" in args:
+        idx = args.index("--init") if "--init" in args else args.index("-i")
+        if idx + 1 >= len(args):
+            print("❌ 错误: 请在 --init 后提供远程私有 Git 仓库 URL，例如:")
+            print("   ccu sync --init git@github.com:username/my-usage-sync.git")
+            return
+        repo_url = args[idx + 1]
+        print(f"🔗 正在连接并初始化多端同步仓库: {repo_url} ...")
+        try:
+            res = init_sync_repo(repo_url=repo_url)
+            cfg = load_sync_config()
+            print("=" * 64)
+            print("✅ 成功连接并初始化多端同步仓库！")
+            print(f"   设备标识: {cfg.get('device_id')}")
+            print(f"   设备名称: {cfg.get('device_name')}")
+            print(f"   远程仓库: {cfg.get('repo_url')}")
+            print("   已自动生成并推送本机首次用量快照到云端。")
+            print("=" * 64)
+        except Exception as e:
+            print(f"❌ 初始化同步仓库失败: {e}")
+        return
+
+    if "--status" in args:
+        cfg = load_sync_config()
+        enabled = is_sync_enabled()
+        print("=" * 64)
+        print("  myccusage 多端同步状态")
+        print("=" * 64)
+        print(f"  状态: {'🟢 已激活' if enabled else '⚪ 未开启'}")
+        print(f"  当前设备: {cfg.get('device_name', '')} [{cfg.get('device_id', '')}]")
+        print(f"  绑定仓库: {cfg.get('repo_url') or '未绑定'}")
+        print(f"  最后同步: {cfg.get('last_sync_time') or '从不'}")
+        if enabled:
+            remotes = load_remote_devices_data().get("devices", [])
+            print(f"  已连接异机设备 ({len(remotes)} 台):")
+            for r in remotes:
+                print(f"    - 💻 {r.get('deviceName')} [{r.get('deviceId')}] ({r.get('platform', '')})")
+        else:
+            print("  提示: 使用 ccu sync --init <git_url> 快速绑定私有仓库")
+        print("=" * 64)
+        return
+
+    # 默认执行同步
+    if not is_sync_enabled():
+        print("=" * 64)
+        print("💡 多端同步尚未配置。")
+        print("   只需提供一个您的私有 GitHub 空仓库地址即可完成多端互联:")
+        print("   ccu sync --init git@github.com:username/my-usage-sync.git")
+        print("   或者运行 ccu web 在网页右上角点击「☁️ 同步」完成绑定。")
+        print("=" * 64)
+        return
+
+    print("🔄 正在执行多端数据同步 (拉取异机最新账本 + 导出本机快照 + 推送)...")
+    try:
+        res = trigger_sync()
+        devices = res.get("syncedDevices", [])
+        print("=" * 64)
+        print(f"✅ 多端同步完成！(耗时 {res.get('duration', 0)}s)")
+        if devices:
+            print(f"   已连接异机设备: {len(devices)} 台 (已在本地自动合并)")
+            for d in devices:
+                print(f"    - 💻 {d.get('deviceName')} [{d.get('deviceId')}]")
+        else:
+            print("   本机快照已更新并推送。待另一台设备绑定同一仓库后即可自动互通！")
+        print("=" * 64)
+    except Exception as e:
+        print(f"❌ 同步失败: {e}")
+
 def main(raw_args=None):
     """
     命令行参数解析与调度入口。
@@ -607,6 +689,11 @@ def main(raw_args=None):
     if "-v" in raw_args or "--version" in raw_args:
         from . import __version__
         print(f"myccusage v{__version__} (100% Native, Zero-ccusage)")
+        return
+
+    # 多端同步命令分流
+    if raw_args and raw_args[0] in ("sync", "--sync"):
+        handle_cli_sync(raw_args[1:])
         return
 
     # 如果存在帮助标记，直接输出用法信息并退出

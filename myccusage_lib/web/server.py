@@ -24,6 +24,17 @@ from ..core import (
     get_all_agents_summary,
     get_today_quick_summary
 )
+from ..sync import (
+    load_sync_config,
+    save_sync_config,
+    is_sync_enabled,
+    init_sync_repo,
+    trigger_sync,
+    load_remote_devices_data,
+    invalidate_remote_cache,
+    get_default_device_id,
+    get_default_device_name
+)
 
 # 定位静态资源目录，使用绝对路径以避免运行目录不同导致的文件找不到问题
 STATIC_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
@@ -173,6 +184,78 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(e)}, 500)
             return
 
+        # 多端同步相关 POST 接口
+        if path == "/api/sync/trigger":
+            stream_requested = query.get("stream", ["0"])[0] in ("1", "true") or "text/event-stream" in self.headers.get("Accept", "")
+            if stream_requested:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-transform")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+
+                def send_event(step: str, status: str, message: str, detail: str = ""):
+                    payload = json.dumps({
+                        "step": step,
+                        "status": status,
+                        "message": message,
+                        "detail": detail,
+                        "time": round(time.time(), 3)
+                    }, ensure_ascii=False)
+                    try:
+                        self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+
+                try:
+                    res = trigger_sync(on_progress=send_event)
+                    DataCache.invalidate()
+                    get_today_quick_summary(force_refresh=True)
+                    send_event("finish", "done", f"多端同步完成！(耗时 {res.get('duration', 0)}s)", json.dumps(res, ensure_ascii=False))
+                except Exception as e:
+                    send_event("finish", "error", f"同步失败: {str(e)}", str(e))
+                return
+
+            try:
+                res = trigger_sync()
+                DataCache.invalidate()
+                get_today_quick_summary(force_refresh=True)
+                self.send_json(res)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        if path == "/api/sync/config":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body)
+                repo_url = data.get("repoUrl", "").strip()
+                device_id = data.get("deviceId", "").strip()
+                device_name = data.get("deviceName", "").strip()
+                res = init_sync_repo(repo_url=repo_url, device_name=device_name, device_id=device_id)
+                DataCache.invalidate()
+                get_today_quick_summary(force_refresh=True)
+                self.send_json(res)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        if path == "/api/sync/unbind":
+            try:
+                cfg = load_sync_config(force_reload=True)
+                cfg["enabled"] = False
+                save_sync_config(cfg)
+                invalidate_remote_cache()
+                DataCache.invalidate()
+                get_today_quick_summary(force_refresh=True)
+                self.send_json({"success": True})
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
         self.send_json({"error": "Not Found"}, 404)
 
     def do_GET(self):
@@ -198,6 +281,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(data)
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
+            return
+
+        # 多端同步状态接口
+        if path == "/api/sync/status":
+            cfg = load_sync_config()
+            remote_info = load_remote_devices_data()
+            devices = remote_info.get("devices", []) if remote_info else []
+            self.send_json({
+                "enabled": is_sync_enabled(),
+                "repoUrl": cfg.get("repo_url", ""),
+                "deviceId": cfg.get("device_id") or get_default_device_id(),
+                "deviceName": cfg.get("device_name") or get_default_device_name(),
+                "lastSyncTime": cfg.get("last_sync_time", ""),
+                "lastSyncStatus": cfg.get("last_sync_status", ""),
+                "lastSyncMessage": cfg.get("last_sync_message", ""),
+                "syncedDevices": devices
+            })
             return
 
         # 1. API 路由设计

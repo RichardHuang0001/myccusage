@@ -206,7 +206,8 @@
     raceRange: '30',
     highlightedAgent: null,
     hiddenAgents: new Set(),
-    raceChartInstance: null
+    raceChartInstance: null,
+    syncState: null
   };
 
   // DOM 元素缓存
@@ -215,6 +216,10 @@
     modeSelector: document.getElementById('modeSelector'),
     btnSortTime: document.getElementById('btnSortTime'),
     btnSortTokens: document.getElementById('btnSortTokens'),
+    btnSync: document.getElementById('btnSync'),
+    btnSyncSettings: document.getElementById('btnSyncSettings'),
+    syncIcon: document.getElementById('syncIcon'),
+    syncBtnText: document.getElementById('syncBtnText'),
     btnRefresh: document.getElementById('btnRefresh'),
     btnThemeToggle: document.getElementById('btnThemeToggle'),
     themeIcon: document.getElementById('themeIcon'),
@@ -223,6 +228,34 @@
     btnClearSearch: document.getElementById('btnClearSearch'),
     btnToggleAllAccordion: document.getElementById('btnToggleAllAccordion'),
     recordCounter: document.getElementById('recordCounter'),
+
+    // 多端 Git 同步弹窗
+    syncModal: document.getElementById('syncModal'),
+    btnCloseSyncModal: document.getElementById('btnCloseSyncModal'),
+    syncSetupView: document.getElementById('syncSetupView'),
+    syncManageView: document.getElementById('syncManageView'),
+    syncRepoUrl: document.getElementById('syncRepoUrl'),
+    syncDeviceName: document.getElementById('syncDeviceName'),
+    syncDeviceId: document.getElementById('syncDeviceId'),
+    btnConfirmSyncSetup: document.getElementById('btnConfirmSyncSetup'),
+    btnCancelSyncSetup: document.getElementById('btnCancelSyncSetup'),
+    syncStatusBadge: document.getElementById('syncStatusBadge'),
+    syncLastTime: document.getElementById('syncLastTime'),
+    syncCurrentDeviceDisplay: document.getElementById('syncCurrentDeviceDisplay'),
+    syncRepoUrlDisplay: document.getElementById('syncRepoUrlDisplay'),
+    syncDeviceCount: document.getElementById('syncDeviceCount'),
+    syncDeviceList: document.getElementById('syncDeviceList'),
+    btnUnbindSync: document.getElementById('btnUnbindSync'),
+    btnCloseSyncView: document.getElementById('btnCloseSyncView'),
+    btnTriggerModalSync: document.getElementById('btnTriggerModalSync'),
+
+    // 多端同步进度实时气泡
+    syncPopover: document.getElementById('syncPopover'),
+    btnCloseSyncPopover: document.getElementById('btnCloseSyncPopover'),
+    syncPopoverTitle: document.getElementById('syncPopoverTitle'),
+    syncPopoverDot: document.getElementById('syncPopoverDot'),
+    syncPopoverError: document.getElementById('syncPopoverError'),
+    syncPopoverErrorMsg: document.getElementById('syncPopoverErrorMsg'),
 
     // 计价下拉
     pricingDropdownContainer: document.getElementById('pricingDropdownContainer'),
@@ -410,6 +443,22 @@
     return formatInlineCost(model, costVal);
   }
 
+  function formatTime(isoStr) {
+    if (!isoStr) return '--';
+    try {
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return isoStr;
+      const now = new Date();
+      const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
+      if (diffSec < 60) return '刚刚';
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } catch (_) {
+      return isoStr;
+    }
+  }
+
   function showToast(msg) {
     el.toast.textContent = msg;
     el.toast.classList.add('show');
@@ -478,6 +527,7 @@
     }
 
     bindEvents();
+    checkSyncStatus();
     loadData();
   }
 
@@ -602,6 +652,361 @@
 
     // 动态全站重算 (即时响应，调度计价中心)
     updateAllPricingDisplays();
+  }
+
+  // ------------------------------------------------------------------------
+  // 多端 Git 私有同步模块 (Multi-Device Git Sync)
+  // ------------------------------------------------------------------------
+  async function checkSyncStatus() {
+    try {
+      const res = await fetch('/api/sync/status', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.syncState = data;
+      if (el.btnSync) {
+        if (data.enabled) {
+          el.btnSync.classList.add('sync-active');
+          const devCount = (data.syncedDevices || []).length;
+          el.btnSync.title = `多端 Git 同步已就绪 (已连接 ${devCount} 台异机)\n点击立即同步增量，长按或右键打开设置`;
+        } else {
+          el.btnSync.classList.remove('sync-active');
+          el.btnSync.title = `多端 Git 私有同步 (未配置，点击开启)`;
+        }
+      }
+    } catch (_) {}
+  }
+
+  let userManuallyEditedId = false;
+
+  function updateGeneratedDeviceId(name) {
+    if (!el.syncDeviceId || userManuallyEditedId) return;
+    const raw = (name || '').trim().toLowerCase();
+    let slug = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const isMac = navigator.platform ? navigator.platform.toLowerCase().includes('mac') : true;
+    const plat = isMac ? 'mac' : (navigator.platform.toLowerCase().includes('win') ? 'win' : 'linux');
+    if (!slug) {
+      let hash = 0;
+      for (let i = 0; i < raw.length; i++) {
+        hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+        hash |= 0;
+      }
+      slug = 'dev-' + Math.abs(hash).toString(36).slice(0, 5);
+    }
+    if (!slug.endsWith(`-${plat}`)) {
+      slug = `${slug}-${plat}`;
+    }
+    el.syncDeviceId.value = slug;
+  }
+
+  function openSyncModal(forceSetup = false) {
+    if (!el.syncModal) return;
+    const isConfigured = state.syncState && state.syncState.enabled && !forceSetup;
+
+    if (!isConfigured) {
+      userManuallyEditedId = false;
+      if (el.syncSetupView) el.syncSetupView.style.display = 'block';
+      if (el.syncManageView) el.syncManageView.style.display = 'none';
+      if (el.syncRepoUrl) el.syncRepoUrl.value = state.syncState?.repoUrl || '';
+      const defaultName = state.syncState?.deviceName || 'MacBook Air';
+      if (el.syncDeviceName) el.syncDeviceName.value = defaultName;
+      updateGeneratedDeviceId(defaultName);
+    } else {
+      if (el.syncSetupView) el.syncSetupView.style.display = 'none';
+      if (el.syncManageView) el.syncManageView.style.display = 'block';
+
+      if (el.syncCurrentDeviceDisplay) {
+        el.syncCurrentDeviceDisplay.textContent = `${state.syncState.deviceName || '--'} [${state.syncState.deviceId || '--'}]`;
+      }
+      if (el.syncRepoUrlDisplay) {
+        el.syncRepoUrlDisplay.textContent = state.syncState.repoUrl || '--';
+        el.syncRepoUrlDisplay.title = state.syncState.repoUrl || '';
+      }
+      if (el.syncLastTime) {
+        el.syncLastTime.textContent = state.syncState.lastSyncTime
+          ? `上次同步: ${formatTime(state.syncState.lastSyncTime)}`
+          : '上次同步: 从未';
+      }
+
+      const devices = state.syncState.syncedDevices || [];
+      if (el.syncDeviceCount) el.syncDeviceCount.textContent = String(devices.length);
+      if (el.syncDeviceList) {
+        if (!devices.length) {
+          el.syncDeviceList.innerHTML = `<div class="empty-state" style="padding: 14px; font-size: 0.8rem; color: var(--text-muted); text-align: center;">暂无其他异机设备，另一台电脑绑定同一仓库后同步即可互通</div>`;
+        } else {
+          el.syncDeviceList.innerHTML = devices.map(d => `
+            <div class="sync-device-card">
+              <div class="sync-device-name">
+                <span>💻</span>
+                <span>${escapeHtml(d.deviceName || d.deviceId)}</span>
+                <span class="badge badge-subtle" style="font-size: 0.7rem;">${escapeHtml(d.platform || 'remote')}</span>
+              </div>
+              <div class="sync-device-time">
+                ${d.exportedAt ? `活跃于 ${formatTime(d.exportedAt)}` : '已连接'}
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+    }
+
+    el.syncModal.style.display = 'flex';
+  }
+
+  function closeSyncModal() {
+    if (el.syncModal) el.syncModal.style.display = 'none';
+  }
+
+  let syncPopoverAutoCloseTimer = null;
+
+  function openSyncPopover() {
+    if (syncPopoverAutoCloseTimer) {
+      clearTimeout(syncPopoverAutoCloseTimer);
+      syncPopoverAutoCloseTimer = null;
+    }
+    if (el.syncPopover) {
+      el.syncPopover.style.display = 'block';
+    }
+  }
+
+  function closeSyncPopover() {
+    if (syncPopoverAutoCloseTimer) {
+      clearTimeout(syncPopoverAutoCloseTimer);
+      syncPopoverAutoCloseTimer = null;
+    }
+    if (el.syncPopover) {
+      el.syncPopover.style.display = 'none';
+    }
+  }
+
+  function resetSyncPopover() {
+    openSyncPopover();
+    if (el.syncPopoverTitle) el.syncPopoverTitle.textContent = '多端同步进行中...';
+    if (el.syncPopoverDot) {
+      el.syncPopoverDot.style.backgroundColor = 'var(--accent-blue)';
+      el.syncPopoverDot.style.animation = 'pulse 1.8s infinite';
+    }
+    if (el.syncPopoverError) el.syncPopoverError.style.display = 'none';
+
+    const steps = [
+      { id: 'pull', detail: '等待中...' },
+      { id: 'export', detail: '增量吸收保护' },
+      { id: 'commit', detail: '原子化存储' },
+      { id: 'push', detail: '安全增量上云' },
+      { id: 'merge', detail: '内存微秒就绪' }
+    ];
+
+    steps.forEach(s => {
+      const item = document.getElementById(`syncStep_${s.id}`);
+      const icon = document.getElementById(`syncStepIcon_${s.id}`);
+      const detail = document.getElementById(`syncStepDetail_${s.id}`);
+      const badge = document.getElementById(`syncStepBadge_${s.id}`);
+      if (item) item.className = 'sync-step-item';
+      if (icon) icon.textContent = '⚪';
+      if (detail) detail.textContent = s.detail;
+      if (badge) badge.textContent = '等待';
+    });
+  }
+
+  function updateSyncStep(stepId, status, message, detail) {
+    openSyncPopover();
+    const item = document.getElementById(`syncStep_${stepId}`);
+    const icon = document.getElementById(`syncStepIcon_${stepId}`);
+    const detailEl = document.getElementById(`syncStepDetail_${stepId}`);
+    const badge = document.getElementById(`syncStepBadge_${stepId}`);
+
+    if (item) {
+      item.className = `sync-step-item ${status}`;
+    }
+
+    if (status === 'running') {
+      if (icon) icon.textContent = '⏳';
+      if (badge) badge.textContent = '进行中';
+      if (detailEl) detailEl.textContent = message || detail || '正在执行...';
+    } else if (status === 'done') {
+      if (icon) icon.textContent = '✅';
+      if (badge) badge.textContent = '已完成';
+      if (detailEl) detailEl.textContent = message || detail || '完成';
+    } else if (status === 'error') {
+      if (icon) icon.textContent = '❌';
+      if (badge) badge.textContent = '失败';
+      if (detailEl) detailEl.textContent = message || detail || '异常中断';
+      if (el.syncPopoverTitle) el.syncPopoverTitle.textContent = '❌ 同步失败';
+      if (el.syncPopoverDot) {
+        el.syncPopoverDot.style.backgroundColor = '#ef4444';
+        el.syncPopoverDot.style.animation = 'none';
+      }
+      if (el.syncPopoverError && el.syncPopoverErrorMsg) {
+        el.syncPopoverErrorMsg.textContent = detail || message || '未知网络或 Git 错误';
+        el.syncPopoverError.style.display = 'block';
+      }
+    }
+
+    if (stepId === 'finish') {
+      if (status === 'done') {
+        if (el.syncPopoverTitle) el.syncPopoverTitle.textContent = '🎉 同步全部完成！';
+        if (el.syncPopoverDot) {
+          el.syncPopoverDot.style.backgroundColor = 'var(--accent-green)';
+          el.syncPopoverDot.style.animation = 'none';
+        }
+        syncPopoverAutoCloseTimer = setTimeout(() => {
+          closeSyncPopover();
+        }, 4000);
+      } else if (status === 'error') {
+        if (el.syncPopoverTitle) el.syncPopoverTitle.textContent = '❌ 同步中断';
+        if (el.syncPopoverDot) {
+          el.syncPopoverDot.style.backgroundColor = '#ef4444';
+          el.syncPopoverDot.style.animation = 'none';
+        }
+        if (el.syncPopoverError && el.syncPopoverErrorMsg) {
+          el.syncPopoverErrorMsg.textContent = detail || message || '发生错误';
+          el.syncPopoverError.style.display = 'block';
+        }
+      }
+    }
+  }
+
+  async function triggerSyncAction() {
+    if (!el.btnSync) return;
+    el.btnSync.classList.add('syncing');
+    if (el.syncBtnText) el.syncBtnText.textContent = '同步中...';
+    if (el.btnTriggerModalSync) {
+      el.btnTriggerModalSync.disabled = true;
+      el.btnTriggerModalSync.textContent = '🔄 正在同步...';
+    }
+
+    resetSyncPopover();
+
+    let hasError = false;
+    let finishData = null;
+
+    try {
+      const res = await fetch('/api/sync/trigger?stream=1', {
+        method: 'POST',
+        headers: { 'Accept': 'text/event-stream' }
+      });
+
+      if (!res.ok) {
+        let errText = `HTTP ${res.status}`;
+        try {
+          const errJson = await res.json();
+          if (errJson.error) errText = errJson.error;
+        } catch (_) {}
+        throw new Error(errText);
+      }
+
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // 保留不完整行
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data:')) {
+              try {
+                const payload = JSON.parse(trimmed.slice(5).trim());
+                updateSyncStep(payload.step, payload.status, payload.message, payload.detail);
+                if (payload.status === 'error') {
+                  hasError = true;
+                }
+                if (payload.step === 'finish' && payload.detail) {
+                  try { finishData = JSON.parse(payload.detail); } catch (_) {}
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      } else {
+        const data = await res.json();
+        finishData = data;
+        updateSyncStep('finish', 'done', `多端同步完成！(耗时 ${data.duration}s)`);
+      }
+
+      if (hasError) {
+        showToast('❌ 同步存在异常，请查看气泡提示');
+      } else {
+        const dur = finishData?.duration ? `(耗时 ${finishData.duration}s)` : '';
+        showToast(`🎉 多端同步成功！${dur}`);
+      }
+
+      await checkSyncStatus();
+      if (el.syncModal && el.syncModal.style.display !== 'none') {
+        openSyncModal();
+      }
+      await loadData();
+    } catch (err) {
+      updateSyncStep('finish', 'error', '同步异常失败', err.message);
+      showToast(`❌ 同步失败: ${err.message}`);
+    } finally {
+      el.btnSync.classList.remove('syncing');
+      if (el.syncBtnText) el.syncBtnText.textContent = '同步';
+      if (el.btnTriggerModalSync) {
+        el.btnTriggerModalSync.disabled = false;
+        el.btnTriggerModalSync.textContent = '🔄 立即同步增量';
+      }
+    }
+  }
+
+  async function confirmSyncSetup() {
+    const repoUrl = el.syncRepoUrl ? el.syncRepoUrl.value.trim() : '';
+    const deviceName = el.syncDeviceName ? el.syncDeviceName.value.trim() : '';
+    const deviceId = el.syncDeviceId ? el.syncDeviceId.value.trim() : '';
+
+    if (!repoUrl) {
+      showToast('❌ 请输入私有 Git 仓库地址');
+      if (el.syncRepoUrl) el.syncRepoUrl.focus();
+      return;
+    }
+
+    if (el.btnConfirmSyncSetup) {
+      el.btnConfirmSyncSetup.disabled = true;
+      el.btnConfirmSyncSetup.innerHTML = '<span>🔗 正在克隆并连接 (约需几秒)...</span>';
+    }
+
+    try {
+      const res = await fetch('/api/sync/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl, deviceName, deviceId })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '连接仓库失败');
+      }
+      showToast('🎉 成功连接多端同步仓库！已生成并推送首次用量快照');
+      closeSyncModal();
+      await checkSyncStatus();
+      await loadData();
+    } catch (err) {
+      showToast(`❌ 初始化同步仓库失败: ${err.message}`);
+    } finally {
+      if (el.btnConfirmSyncSetup) {
+        el.btnConfirmSyncSetup.disabled = false;
+        el.btnConfirmSyncSetup.innerHTML = '<span>🔗 连接并同步首次数据</span>';
+      }
+    }
+  }
+
+  async function unbindSync() {
+    if (!confirm('确认解除当前多端同步仓库绑定吗？\n本地已拉取的历史账本不会被删除，但将不再自动同步更新。')) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/sync/unbind', { method: 'POST' });
+      if (!res.ok) throw new Error('解除绑定失败');
+      showToast('已解除多端同步绑定');
+      closeSyncModal();
+      await checkSyncStatus();
+      await loadData();
+    } catch (err) {
+      showToast(`❌ 操作失败: ${err.message}`);
+    }
   }
 
   // ------------------------------------------------------------------------
@@ -1142,6 +1547,68 @@
     }
     if (el.btnConfirmImportModel) {
       el.btnConfirmImportModel.addEventListener('click', confirmImportModel);
+    }
+
+    // 多端 Git 同步按钮与弹窗操作
+    if (el.btnSync) {
+      el.btnSync.addEventListener('click', (e) => {
+        if (!state.syncState || !state.syncState.enabled || e.shiftKey || e.altKey || e.ctrlKey) {
+          openSyncModal();
+        } else {
+          triggerSyncAction();
+        }
+      });
+      el.btnSync.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openSyncModal();
+      });
+    }
+
+    if (el.btnSyncSettings) {
+      el.btnSyncSettings.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openSyncModal();
+      });
+    }
+
+    if (el.btnCloseSyncPopover) {
+      el.btnCloseSyncPopover.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeSyncPopover();
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if (el.syncPopover && el.syncPopover.style.display !== 'none') {
+        const wrapper = document.querySelector('.sync-nav-wrapper');
+        if (wrapper && !wrapper.contains(e.target)) {
+          if (!el.btnSync || !el.btnSync.classList.contains('syncing')) {
+            closeSyncPopover();
+          }
+        }
+      }
+    });
+
+    if (el.btnCloseSyncModal) el.btnCloseSyncModal.addEventListener('click', closeSyncModal);
+    if (el.btnCloseSyncView) el.btnCloseSyncView.addEventListener('click', closeSyncModal);
+    if (el.btnCancelSyncSetup) el.btnCancelSyncSetup.addEventListener('click', closeSyncModal);
+    if (el.syncModal) {
+      el.syncModal.addEventListener('click', (e) => {
+        if (e.target === el.syncModal) closeSyncModal();
+      });
+    }
+    if (el.btnConfirmSyncSetup) el.btnConfirmSyncSetup.addEventListener('click', confirmSyncSetup);
+    if (el.btnUnbindSync) el.btnUnbindSync.addEventListener('click', unbindSync);
+    if (el.btnTriggerModalSync) el.btnTriggerModalSync.addEventListener('click', triggerSyncAction);
+    if (el.syncDeviceName) {
+      el.syncDeviceName.addEventListener('input', () => {
+        updateGeneratedDeviceId(el.syncDeviceName.value);
+      });
+    }
+    if (el.syncDeviceId) {
+      el.syncDeviceId.addEventListener('input', () => {
+        userManuallyEditedId = true;
+      });
     }
 
     // 切换 Agent
@@ -2295,7 +2762,7 @@
           <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
           <td class="col-title">
             <div class="title-cell">
-              <span class="title-text" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</span>
+              <span class="title-text" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</span>${r.remoteDevice ? ` <span class="remote-device-tag">💻 ${escapeHtml(r.remoteDevice)}</span>` : ''}
               ${r.sessionId ? `<button class="copy-id-btn" data-id="${r.sessionId}" title="复制 Session ID">ID</button>` : ''}
             </div>
           </td>
@@ -2375,7 +2842,7 @@
               <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
               <td class="col-title">
                 <div class="title-cell">
-                  <span class="title-text" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</span>
+                  <span class="title-text" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</span>${r.remoteDevice ? ` <span class="remote-device-tag">💻 ${escapeHtml(r.remoteDevice)}</span>` : ''}
                   ${r.sessionId ? `<button class="copy-id-btn" data-id="${r.sessionId}" title="复制 Session ID">ID</button>` : ''}
                 </div>
               </td>

@@ -21,6 +21,7 @@ import concurrent.futures
 from datetime import datetime, timezone
 from collections import OrderedDict
 from .adapters import ADAPTERS, get_adapter
+from .sync import get_remote_agent_data
 
 # 星期常量映射
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
@@ -768,6 +769,21 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                 except Exception:
                     pass
 
+        # 多端异机数据融合 (短路开销 < 0.005ms)
+        remote_daily, _ = get_remote_agent_data(agent_type)
+        if remote_daily:
+            for d_str, r_list in remote_daily.items():
+                if d_str not in day_sessions_map:
+                    day_sessions_map[d_str] = []
+                    if d_str not in active_days:
+                        active_days.append(d_str)
+                # 建立该日期下已存在的 sessionId 集合，避免重复插入
+                existing_sids = {s.get("sessionId") for s in day_sessions_map[d_str] if s.get("sessionId")}
+                for rs in r_list:
+                    if rs.get("sessionId") not in existing_sids:
+                        day_sessions_map[d_str].append(rs)
+            active_days.sort()
+
     # 3. 统计与分层聚合
     grand_total = 0
     grand_input = 0
@@ -822,7 +838,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
 
             if not summary_only:
                 sid = s.get("sessionId", "")
-                title = resolve_title(sid, titles)
+                title = s.get("title") or resolve_title(sid, titles)
                 time_display = format_time(s.get("lastActivity"))
                 if time_display == "--":
                     time_display = d_str[5:]
@@ -840,6 +856,8 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                     "outputTokens": out,
                     "costCny": round(cost, 2),
                     "costCnyRaw": cost,
+                    "remoteDevice": s.get("remoteDevice", ""),
+                    "isRemote": s.get("isRemote", False),
                 }
                 day_records.append(record)
                 flat_records.append(record)
@@ -997,6 +1015,16 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
                 raise RuntimeError(f"无法解析 ccusage {ccusage_subcmd} 输出: {e}")
             raw_sessions = usage_data.get("sessions", [])
 
+        # 多端异机会话融合 (短路开销 < 0.005ms)
+        _, remote_sessions = get_remote_agent_data(agent_type)
+        if remote_sessions:
+            local_sids = {s.get("sessionId") for s in raw_sessions if s.get("sessionId")}
+            combined = list(raw_sessions)
+            for rs in remote_sessions:
+                if rs.get("sessionId") not in local_sids:
+                    combined.append(rs)
+            raw_sessions = combined
+
     sessions = []
     grand_total = 0
     grand_input = 0
@@ -1015,7 +1043,7 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
         ca = s.get("cacheReadTokens", 0)
         out = max(0, tot - (inp + ca))
         cost = calc_deepseek_cost(inp, ca, out)
-        title = resolve_title(sid, titles)
+        title = s.get("title") or resolve_title(sid, titles)
 
         grand_total += tot
         grand_input += inp
@@ -1033,7 +1061,9 @@ def get_session_data(agent_type, sort_by_tokens=False, clean_args=None):
             "cacheTokens": ca,
             "outputTokens": out,
             "costCny": round(cost, 2),
-            "costCnyRaw": cost
+            "costCnyRaw": cost,
+            "remoteDevice": s.get("remoteDevice", ""),
+            "isRemote": s.get("isRemote", False),
         })
 
     if sort_by_tokens:
