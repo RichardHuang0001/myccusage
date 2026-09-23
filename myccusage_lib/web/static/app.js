@@ -865,8 +865,12 @@
     }
   }
 
+  let _isSyncing = false;
+
   async function triggerSyncAction() {
     if (!el.btnSync) return;
+    if (_isSyncing) return; // 已在同步中，忽略重复点击
+    _isSyncing = true;
     el.btnSync.classList.add('syncing');
     if (el.syncBtnText) el.syncBtnText.textContent = '同步中...';
     if (el.btnTriggerModalSync) {
@@ -939,11 +943,13 @@
       if (el.syncModal && el.syncModal.style.display !== 'none') {
         openSyncModal();
       }
-      await loadData();
+      await loadData(true); // forceRefresh — 强制绕过缓存，刷新同步后数据
     } catch (err) {
       updateSyncStep('finish', 'error', '同步异常失败', err.message);
       showToast(`❌ 同步失败: ${err.message}`);
     } finally {
+      // 始终恢复按钮状态，无论成功/失败/网络异常均可重试
+      _isSyncing = false;
       el.btnSync.classList.remove('syncing');
       if (el.syncBtnText) el.syncBtnText.textContent = '同步';
       if (el.btnTriggerModalSync) {
@@ -1838,7 +1844,7 @@
   }
 
   // 数据拉取与渲染
-  async function loadData() {
+  async function loadData(forceRefresh = false) {
     el.ledgerContainer.innerHTML = `
       <div class="loading-state">
         <div class="spinner"></div>
@@ -1854,7 +1860,7 @@
       if (el.tableSection) el.tableSection.style.display = 'none';
       if (el.modeSelector) el.modeSelector.style.display = 'none';
       try {
-        const res = await fetch('/api/all');
+        const res = await fetch(forceRefresh ? `/api/all?_t=${Date.now()}` : '/api/all');
         const json = await res.json();
         state.allAgentsData = json;
         state.data = json;
@@ -1872,7 +1878,7 @@
     if (el.tableSection) el.tableSection.style.display = 'block';
 
     try {
-      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}`;
+      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}${forceRefresh ? `&_t=${Date.now()}` : ''}`;
       const res = await fetch(url);
       const json = await res.json();
 
