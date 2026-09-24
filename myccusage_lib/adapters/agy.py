@@ -14,9 +14,66 @@ from __future__ import annotations
 import os
 import re
 import glob
+import json
 import sqlite3
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
+from .base import (
+    BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs,
+    UNKNOWN_MODEL, normalize_model_name,
+)
+
+# 会话级模型来源：真实模型名 与 Antigravity 的模型枚举占位符
+_MODEL_NAME_RE = re.compile(
+    rb"(gemini-[0-9][0-9a-z\-\.]*|claude-[0-9][0-9a-z\-\.]*|gpt-[0-9a-z\-\.]*"
+    rb"|deepseek-[0-9a-z\-\.]*|glm-[0-9a-z\-\.]*)"
+)
+_MODEL_ENUM_RE = re.compile(rb"MODEL_PLACEHOLDER_[A-Z0-9]+")
+
+# 枚举映射表的持久化 schema 版本
+_ENUM_MAP_SCHEMA = 1
+
+
+def extract_session_model(blob: bytes, enum_votes: dict) -> str:
+    """
+    从会话级 protobuf blob 中提取模型名（三层优先级，并顺带学习枚举映射）：
+
+      1. blob 中直接出现真实模型名 → 直接使用；若同时含枚举占位符，记一条映射投票
+      2. 只有枚举占位符 → 用已学到的映射（取多数票）翻译成真实名
+      3. 兜底 → 用枚举原值（保证 token 仍可归属、不丢失），都没有则 unknown
+
+    enum_votes: {枚举: {真实名: 票数}}。本函数会**就地累积**投票（副作用），
+    由调用方负责持久化 —— 这样映射表能随 Antigravity 版本变化自适应，
+    而不是依赖一张会过期的硬编码表。
+
+    为什么按"会话级"而非"step 级"：实测 gen_metadata 并非每个 step 都有对应条目，
+    step 级关联只有 47.4%；而会话（db）级归属可达 100%。
+    """
+    if not blob:
+        return UNKNOWN_MODEL
+
+    real = _MODEL_NAME_RE.search(blob)
+    enum = _MODEL_ENUM_RE.search(blob)
+
+    if real:
+        name = normalize_model_name(real.group(1).decode("ascii", "ignore"))
+        if enum and name != UNKNOWN_MODEL:
+            e = enum.group(0).decode("ascii", "ignore")
+            votes = enum_votes.setdefault(e, {})
+            votes[name] = votes.get(name, 0) + 1
+        return name
+
+    if enum:
+        e = enum.group(0).decode("ascii", "ignore")
+        votes = enum_votes.get(e)
+        if votes:
+            best = max(votes.items(), key=lambda kv: kv[1])[0]
+            if best:
+                return normalize_model_name(best)
+        # 尚未学习的枚举：用原值兜底，保证 token 不因"未知模型"而丢失
+        return normalize_model_name(e)
+
+    return UNKNOWN_MODEL
+
 
 def parse_proto(b: bytes) -> list[tuple[int, int, any]]:
     """
@@ -140,6 +197,67 @@ class AntigravityAdapter(BaseAgentAdapter):
         self.base_dir = self.sources[0][1] if self.sources else os.path.expanduser("~/.gemini/antigravity")
         self.conv_dir = os.path.join(self.base_dir, "conversations")
         self.cache_dir = os.path.expanduser("~/.cache/myccusage")
+        # 枚举→真实名 的映射投票表（惰性加载，冷扫后持久化）
+        self._enum_map: dict | None = None
+
+    # ------------------------------------------------------------------
+    # 模型枚举映射表：随 Antigravity 版本变化自适应
+    # ------------------------------------------------------------------
+
+    def _load_enum_map(self) -> dict:
+        """加载映射表（惰性、单次）。schema 不匹配或文件损坏时退化为空表，绝不影响主流程。"""
+        if self._enum_map is not None:
+            return self._enum_map
+        self._enum_map = {}
+        path = os.path.join(self.cache_dir, "agy_model_enum_map.json")
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get("__schema__") == _ENUM_MAP_SCHEMA:
+                    m = data.get("map")
+                    if isinstance(m, dict):
+                        self._enum_map = {k: dict(v) for k, v in m.items() if isinstance(v, dict)}
+        except Exception:
+            self._enum_map = {}
+        return self._enum_map
+
+    def _save_enum_map(self) -> None:
+        """原子持久化映射表（与文件缓存同风格：临时文件 + os.replace）"""
+        if not self._enum_map:
+            return
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+        except OSError:
+            return
+        path = os.path.join(self.cache_dir, "agy_model_enum_map.json")
+        tmp = path + f".tmp.{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"__schema__": _ENUM_MAP_SCHEMA, "map": self._enum_map}, f)
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _read_db_model(cursor, enum_votes: dict) -> str:
+        """在既有连接内读取会话级模型（不额外开库）。
+
+        gen_metadata / executor_metadata 每库通常仅 1~2 行，额外查询成本可忽略；
+        且提取结果随 records 一起进入文件级缓存，故只在冷扫时付出。
+        """
+        try:
+            blobs = []
+            for tbl in ("gen_metadata", "executor_metadata"):
+                cursor.execute(f"SELECT data FROM {tbl} WHERE data IS NOT NULL")
+                blobs.extend(r[0] for r in cursor.fetchall() if isinstance(r[0], bytes))
+            return extract_session_model(b"".join(blobs), enum_votes)
+        except Exception:
+            return UNKNOWN_MODEL
 
     def is_available(self) -> bool:
         """检测本地任何形态的 Antigravity 目录或会话目录是否存在"""
@@ -325,6 +443,8 @@ class AntigravityAdapter(BaseAgentAdapter):
             return cached
 
         all_records = []
+        # 枚举→真实名 的投票表（冷扫时累积，结束后持久化）
+        enum_votes = self._load_enum_map()
 
         conv_dirs = [
             os.path.join(b, "conversations")
@@ -358,6 +478,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                         uri = f"file:{fpath}?mode=ro"
                         conn = sqlite3.connect(uri, uri=True, timeout=2.0)
                         c = conn.cursor()
+                        # 会话级模型：与 token 在同一次连接内取，不额外开库
+                        db_model = self._read_db_model(c, enum_votes)
                         c.execute("SELECT metadata FROM steps WHERE step_type = 15 AND metadata IS NOT NULL")
                         for (meta,) in c.fetchall():
                             if not meta:
@@ -377,8 +499,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                                     dt = datetime.fromtimestamp(ts_sec)
                                     date_str = dt.strftime("%Y-%m-%d")
                                     iso_str = datetime.fromtimestamp(ts_sec, timezone.utc).isoformat()
-                                    # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
-                                    records.append((sid, date_str, iso_str, inp, cr, out, tot, UNKNOWN_MODEL))
+                                    records.append((sid, date_str, iso_str, inp, cr, out, tot, db_model))
                         conn.close()
                     except Exception:
                         # 保护性退避：若读取发生碰撞（如 Agent 正在排他写库锁死），安全回退使用上次成功快照，避免空数据污染
@@ -394,6 +515,7 @@ class AntigravityAdapter(BaseAgentAdapter):
 
             if cache_modified and not today_only:
                 self._save_persisted_file_cache()
+                self._save_enum_map()
 
         daily_res, session_res = self._accumulate_records(all_records)
         self._store_full_result(fp, daily_res, session_res, today_only)

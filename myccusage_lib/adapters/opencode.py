@@ -8,8 +8,10 @@ OpenCode 原生适配器:
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
-from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, get_today_midnight_ts, get_candidate_home_dirs, UNKNOWN_MODEL
+from .base import (BaseAgentAdapter, ms_to_iso, ms_to_date_str, get_today_midnight_ts,
+                   get_candidate_home_dirs, UNKNOWN_MODEL, normalize_model_name)
 
 class OpenCodeAdapter(BaseAgentAdapter):
     """OpenCode 原生适配器，读取 SQLite 获取数据"""
@@ -100,6 +102,23 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 cur = conn.cursor()
 
                 min_tc = int(get_today_midnight_ts() * 1000) if today_only else 0
+
+                # 会话级模型：session.model 是 JSON 串（含 id / providerID / variant）。
+                # 实测仅 28.6% 的会话带 model，但按 **token 加权覆盖率达 97.2%**，
+                # 故按会话归属即可获得高覆盖；缺失的会话记为 unknown（保证 token 不丢）。
+                sid_model = {}
+                try:
+                    cur.execute("SELECT id, model FROM session "
+                                "WHERE model IS NOT NULL AND TRIM(model) != ''")
+                    for _sid, _raw in cur.fetchall():
+                        try:
+                            _mid = (json.loads(_raw) or {}).get("id") or ""
+                        except Exception:
+                            _mid = ""
+                        sid_model[_sid] = normalize_model_name(_mid)
+                except Exception:
+                    sid_model = {}
+
                 # 优先从 part 表获取基于单轮交互的精确时间戳与 Token 切片
                 if today_only:
                     sql_parts = """
@@ -132,7 +151,6 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
                 for sid, tc, data in part_rows:
                     try:
-                        import json
                         obj = json.loads(data)
                         tok = obj.get("tokens", {})
                         inp = tok.get("input", 0)
@@ -146,8 +164,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                         sessions_with_parts.add(sid)
                         date_str = ms_to_date_str(tc) if tc else "1970-01-01"
                         iso_str = ms_to_iso(tc) if tc else ""
-                        # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
-                        records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, UNKNOWN_MODEL))
+                        model = sid_model.get(sid, UNKNOWN_MODEL)
+                        records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, model))
                     except Exception:
                         pass
 
@@ -192,8 +210,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                     iso_str = ms_to_iso(act_time) if act_time else ""
                     tot = inp + cr + cw + out
 
-                    # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
-                    records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, UNKNOWN_MODEL))
+                    model = sid_model.get(sid, UNKNOWN_MODEL)
+                    records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, model))
 
                 conn.close()
             except Exception:

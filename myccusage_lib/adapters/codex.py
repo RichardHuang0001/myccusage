@@ -13,7 +13,8 @@ import glob
 import json
 import re
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
+from .base import (BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs,
+                       UNKNOWN_MODEL, normalize_model_name)
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex 的本地日志数据适配器"""
@@ -211,11 +212,22 @@ class CodexAdapter(BaseAgentAdapter):
                     prev_raw_inp = 0
                     prev_cached = 0
                     prev_out = 0
+                    # 会话级模型：token_count 记录（token 来源）不含 model，需从
+                    # message / reasoning 等其他类型记录中捕获（实测 4018 条 token_count 全无 model）
+                    file_model = UNKNOWN_MODEL
 
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             for line in f:
                                 if "total_token_usage" not in line:
+                                    # 一旦定出模型即短路：额外代价仅"每会话最多解析一行 JSON"
+                                    if file_model == UNKNOWN_MODEL and '"model"' in line:
+                                        try:
+                                            _m = (json.loads(line).get("payload") or {}).get("model")
+                                            if _m:
+                                                file_model = normalize_model_name(_m)
+                                        except Exception:
+                                            pass
                                     continue
                                 try:
                                     obj = json.loads(line)
@@ -253,18 +265,16 @@ class CodexAdapter(BaseAgentAdapter):
                                 delta_tot = delta_inp + delta_cached + delta_out
 
                                 if delta_tot > 0:
-                                    # TODO(二期): 改用会话级归属。
-                                    # 实测依据：codex 的 payload.type == "token_count" 记录（即 token 来源）
-                                    # 共 4018 条，全部不含 model；模型名只出现在 message / reasoning
-                                    # 等其他类型记录中（gpt-5.4 / gpt-5.3-codex 等）。
-                                    # 因此必须按"会话级归属"处理，与 grok/agy 同类。
-                                    records.append((sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot, UNKNOWN_MODEL))
+                                    records.append((sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot))
                                     prev_raw_inp = cur_raw_inp
                                     prev_cached = cur_cached
                                     prev_out = cur_out
                     except Exception:
                         records = cached[2] if cached else []
                     else:
+                        # 统一补齐第 8 位（模型名可能在扫描过程中才被捕获到）
+                        records = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], file_model)
+                                   for r in records]
                         self._file_cache[fpath] = (mtime, size, records)
                         cache_modified = True
 

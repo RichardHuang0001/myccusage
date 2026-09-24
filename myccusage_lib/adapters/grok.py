@@ -11,7 +11,8 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
+from .base import (BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast,
+                       get_candidate_home_dirs, UNKNOWN_MODEL, normalize_model_name)
 
 class GrokAdapter(BaseAgentAdapter):
     """Grok 适配器，支持 SQLite 及本地日志文件的解析与防抖缓存"""
@@ -159,10 +160,22 @@ class GrokAdapter(BaseAgentAdapter):
                 else:
                     records = []
                     sid = os.path.basename(os.path.dirname(fpath))
+                    # 会话级模型：实测 modelId 与 usage 位于不同行（同行重叠 0%），
+                    # 故在扫描中捕获一次、最后统一赋给该文件的全部记录（会话级覆盖 100%）
+                    file_model = UNKNOWN_MODEL
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             for line in f:
                                 if "turn_completed" not in line:
+                                    # 顺带捕获会话级模型名（用 "_meta" 预筛，避免无谓的 json 解析）
+                                    if file_model == UNKNOWN_MODEL and "_meta" in line:
+                                        try:
+                                            _upd = (json.loads(line).get("params") or {}).get("update") or {}
+                                            _m = (_upd.get("_meta") or {}).get("modelId")
+                                            if _m:
+                                                file_model = normalize_model_name(_m)
+                                        except Exception:
+                                            pass
                                     continue
                                 try:
                                     obj = json.loads(line)
@@ -181,10 +194,11 @@ class GrokAdapter(BaseAgentAdapter):
                                 date_str = ts_to_date_str(ts) if ts else "1970-01-01"
                                 iso_str = ts_to_iso(ts) if ts else ""
 
-                                # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
-                                records.append((sid, date_str, iso_str, inp, c_read, out, tot, UNKNOWN_MODEL))
+                                records.append((sid, date_str, iso_str, inp, c_read, out, tot))
                     except Exception:
                         pass
+                    # 统一补齐第 8 位（会话级模型在扫描过程中捕获）
+                    records = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], file_model) for r in records]
                     # 更新文件防抖缓存
                     self._file_cache[fpath] = (mtime, size, records)
                     cache_modified = True
