@@ -217,16 +217,27 @@ myccusage/
   - **返回值**：字典包含 `sessions` 列表（含 `sessionId`, `time`, `title`, `totalTokens`, `cost`, `hitRate` 等）及 `summary`。
 - `get_all_agents_summary() -> dict`
   - **作用**：Web 看板首屏使用的 8 大 Agent 跨助手全景对比数据，包含各 Agent 总 Token、各部分细分与折算总费用。
+- `get_model_breakdown(agent_type: str = None) -> dict`
+  - **作用**：按**实际调用的模型**维度聚合 Token 与调用次数（`agent_type=None` 表示全部 Agent）。
+  - **返回值**：`models`（按 Token 降序，每项含 `model`/四类 Token/`calls`/`agents` 来源明细）、
+    `byAgent`、`byDate`、`totals`（含 `unknownTokens` 用于暴露未识别模型的占比）。
+  - **实现要点**：**只读**适配器已经产出的 `daily_map.models`，不新增任何文件扫描；一次遍历产出三个视图。
+  - **口径**：与 `get_daily_data` **完全一致** —— 同样融合异机会话并按 `(日期, sessionId)` 去重；
+    由于同步分片按设计不携带模型明细，异机部分统一归入 `unknown`（既不虚构归属，又保证总量逐位一致）。
 
-#### 原生标题与时间提取函数（均返回 `dict[str, str]` 映射 `sessionId -> title`）：
-- `get_agy_titles()`: 从 `~/.gemini/antigravity/agyhub_summaries_proto.pb` 反序列化二进制 UTF-8 文本；兜底读取 `transcript.jsonl` 首行。
-- `get_claude_titles()`: 从 `~/.claude/history.jsonl` 及各工程 `~/.claude/projects/*/*.jsonl` 中读取。
-- `get_hermes_titles_and_times()`: 读取 `~/.hermes/state.db` SQLite 数据表。
-- `get_codex_titles()`: 读取 `~/.codex/session_index.jsonl` 与各 rollout 记录。
-- `get_grok_titles()`: 读取 `~/.grok/sessions/session_search.sqlite` 与 `prompt_history.jsonl`。
-- `get_pi_titles()`: 读取 `~/.pi/agent/sessions/*/*.jsonl`。
-- `get_opencode_titles_and_times()`: 读取 `~/.local/share/opencode/opencode.db`。
-- `get_workbuddy_titles_and_times()`: 读取 `~/.workbuddy/workbuddy.db` SQLite 数据表；兜底读取 `~/.workbuddy/projects/*/*.jsonl`。
+#### 原生标题与时间提取
+标题与活跃时间的提取**已全部下沉到各适配器的 `get_titles_and_times()`**，由
+`get_daily_data` / `get_session_data` 在取数时一并调用。
+（早期版本在 `core.py` 中保留的 `get_*_titles*` 系列函数属不可达死代码，已在代码整改中删除。）
+各适配器的标题来源（均为只读访问）：
+- `agy`: `antigravity*/agyhub_summaries_proto.pb` 反序列化，兜底 `transcript.jsonl` 与 `conversation_summaries.db`
+- `claude`: `~/.claude/history.jsonl` 与 `projects/*/*.jsonl`
+- `hermes`: `~/.hermes/state.db`
+- `codex`: `~/.codex/session_index.jsonl` 与 rollout 记录
+- `grok`: `~/.grok/sessions/session_search.sqlite` 与 `prompt_history.jsonl`
+- `pi`: `~/.pi/agent/sessions/*/*.jsonl`
+- `opencode`: `~/.local/share/opencode/opencode.db`
+- `workbuddy`: `~/.workbuddy/workbuddy.db`，兜底 `~/.workbuddy/projects/*/*.jsonl`
 
 ---
 
@@ -238,6 +249,8 @@ myccusage/
   - **任何修改终端输出样式的 Agent 必须复用此函数**，否则会导致中英混合表格竖线错位。
 - `render_daily_table(data: dict)`: 将日账本数据以高对比度 ASCII/Unicode 边框输出，最新日期位于表格最下方。
 - `render_session_table(data: dict)`: 渲染项目累计总览报表。
+- `render_model_table(data: dict, agent_type: str = None)`: 渲染「实际模型」维度用量排行
+  （`ccu models` / `ccu models agy`），与 Web 端 `/api/models` 同源同口径。
 
 ---
 
@@ -296,7 +309,21 @@ myccusage/
 4. **在 `cli.py` 添加参数映射**：
    在 `main()` 参数解析部分增加 `--cursor` 选项，并更新 `print_usage_hint()`。
 5. **在 Web 前端 `index.html` 增加选择项**：
-   在 `<div class="agent-tabs">` 中增加对应 Tab 按钮。
+   在导航栏的 `<div class="segmented-control" id="agentSelector">` 中增加
+   `<button class="segment-btn" data-agent="cursor">Cursor IDE</button>`。
+6. **接入模型维度**（可选，但强烈建议）：
+   适配器的 `fetch_data()` 产出的 `records` 为 **8 元组**，末位是该条记录所属的**模型名**：
+   ```python
+   records.append((sid, date_str, iso_str, inp, cr, out, tot, model_name))
+   ```
+   - `model_name` 必须经 `base.normalize_model_name()` 归一化；无法识别时用 `base.UNKNOWN_MODEL`，
+     **不要**用 `None`。
+   - 若模型名与 Token **不在同一行/同一表**（如 agy 的 `gen_metadata`、grok 的 `_meta.modelId`），
+     采用**会话级归属**：在扫描中捕获一次模型名，扫描结束后统一补齐第 8 位
+     （`records = [(r[0],...,r[6], model) for r in records]`）。
+   - `base._accumulate_records()` 会自动产出 `models` 子结构（含 `calls` 调用次数），
+     **无需**在各适配器里重复实现累加逻辑。
+   - 不做模型提取也可先填 `UNKNOWN_MODEL` 占位，保持 8 元组契约统一。
 
 ---
 

@@ -987,6 +987,13 @@ def get_model_breakdown(agent_type=None):
         "totals":  { models, totalTokens, calls, unknownTokens, unknownCalls },
       }
 
+    口径说明（重要）：本函数与 get_daily_data 保持**完全相同的数据口径** ——
+    除本机适配器数据外，同样融合多端同步带来的异机会话，并按 (日期, sessionId) 去重。
+    由于同步分片按设计**不携带模型明细**（导出白名单会丢弃 models，避免分片体积膨胀），
+    异机部分统一归入 UNKNOWN_MODEL：既不虚构模型归属，又保证 totalTokens 与
+    /api/data 逐位一致（否则 Web 上会出现"模型页总量 ≠ 账本页总量"的矛盾）。
+    异机分片不含调用次数信息，故其 calls 计 0，不做虚构。
+
     注：totals.unknownTokens 用于暴露「未能识别模型」的数据占比，
     便于观察各 Agent 的模型覆盖率，而不是把它隐藏在明细里。
     """
@@ -1012,6 +1019,20 @@ def get_model_breakdown(agent_type=None):
         e["calls"] += mv.get("calls", 0)
         return e
 
+    def _record(aid: str, d_str: str, mname: str, mv: dict) -> None:
+        """把单个模型的用量同时记入 全局 / 按 Agent / 按日期 三个视图。"""
+        g = _add(global_map, mname, mv)
+        # 模型 -> 来源 Agent 的明细（用于展示"这个模型被哪些 Agent 用过"）
+        # agents 子结构按需创建，避免给 byAgent / byDate 的条目也带上它
+        agents_of_model = g.setdefault("agents", {})
+        ag = agents_of_model.get(aid)
+        if ag is None:
+            ag = agents_of_model[aid] = {"totalTokens": 0, "calls": 0}
+        ag["totalTokens"] += mv.get("totalTokens", 0)
+        ag["calls"] += mv.get("calls", 0)
+        _add(agent_maps.setdefault(aid, {}), mname, mv)
+        _add(date_maps.setdefault(d_str, {}), mname, mv)
+
     for aid in targets:
         adapter = ADAPTERS.get(aid)
         if not adapter or not adapter.is_available():
@@ -1021,25 +1042,33 @@ def get_model_breakdown(agent_type=None):
         except Exception:
             continue
 
-        aid_map = agent_maps.setdefault(aid, {})
+        seen: set[tuple[str, str]] = set()
         for d_str, entries in daily_map.items():
-            day_map = date_maps.setdefault(d_str, {})
             for entry in entries:
+                seen.add((d_str, entry.get("sessionId")))
                 models = entry.get("models")
                 if not models:
                     continue
                 for mname, mv in models.items():
-                    g = _add(global_map, mname, mv)
-                    # 模型 -> 来源 Agent 的明细（用于展示"这个模型被哪些 Agent 用过"）
-                    # 注意 agents 子结构按需创建，避免给 byAgent / byDate 的条目也带上它
-                    agents_of_model = g.setdefault("agents", {})
-                    ag = agents_of_model.get(aid)
-                    if ag is None:
-                        ag = agents_of_model[aid] = {"totalTokens": 0, "calls": 0}
-                    ag["totalTokens"] += mv.get("totalTokens", 0)
-                    ag["calls"] += mv.get("calls", 0)
-                    _add(aid_map, mname, mv)
-                    _add(day_map, mname, mv)
+                    _record(aid, d_str, mname, mv)
+
+        # 异机数据融合（与 get_daily_data 同口径，按 (日期, sessionId) 去重）
+        remote_daily, _ = get_remote_agent_data(aid)
+        if remote_daily:
+            for d_str, r_list in remote_daily.items():
+                for rs in r_list:
+                    if (d_str, rs.get("sessionId")) in seen:
+                        continue
+                    tot = rs.get("totalTokens", 0)
+                    if tot <= 0:
+                        continue
+                    _record(aid, d_str, UNKNOWN_MODEL, {
+                        "inputTokens": rs.get("inputTokens", 0),
+                        "cacheReadTokens": rs.get("cacheReadTokens", 0),
+                        "outputTokens": rs.get("outputTokens", 0),
+                        "totalTokens": tot,
+                        "calls": 0,  # 分片不含调用次数信息，不虚构
+                    })
 
     def _sorted(container: dict) -> list[dict]:
         return sorted(container.values(), key=lambda x: -x["totalTokens"])

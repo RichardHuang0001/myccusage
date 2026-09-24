@@ -27,9 +27,11 @@ if sys.platform == "win32":
         pass
 
 from .core import (
+    SUPPORTED_AGENTS,
     get_daily_data,
     get_session_data,
     get_today_quick_summary,
+    get_model_breakdown,
 )
 
 def display_len(s):
@@ -514,6 +516,68 @@ def render_quick_summary(summary):
     print("     ccu --help      # 查看完整参数帮助")
     print("=" * total_table_width)
 
+def render_model_table(data, agent_type=None):
+    """
+    渲染「实际调用的模型」维度用量排行。
+
+    与 Web 端 /api/models 同源（同一 core.get_model_breakdown），口径完全一致：
+    各模型 Token 之和恒等于对应会话的 totalTokens 之和（Token 守恒不变式）。
+    未能识别模型的数据以 unknown 单列展示，而不是从统计中剔除 —— 避免掩盖数据缺陷。
+    """
+    term_width = min(96, shutil.get_terminal_size((96, 20)).columns)
+    term_width = max(term_width, 78)
+
+    if agent_type and agent_type in SUPPORTED_AGENTS:
+        scope = SUPPORTED_AGENTS[agent_type].get("name", agent_type)
+    else:
+        scope = "全部 Agent"
+
+    print("=" * term_width)
+    print(f"  myccusage 模型维度用量排行 ({scope})")
+    print("  * 按各 Agent 本地日志中实际调用的模型统计 | 明细之和恒等于总 Token")
+    print("=" * term_width)
+
+    models = data.get("models") or []
+    totals = data.get("totals") or {}
+    if not models:
+        print("  暂无模型用量记录。")
+        print("=" * term_width)
+        return
+
+    total_tok = totals.get("totalTokens", 0) or 1
+    w_name, w_tok, w_pct, w_call, w_agent = 30, 12, 7, 10, 24
+
+    print(
+        pad_str("模型名称", w_name, "left") + " │ " +
+        pad_str("Token 总量", w_tok, "right") + " │ " +
+        pad_str("占比", w_pct, "right") + " │ " +
+        pad_str("调用次数", w_call, "right") + " │ " +
+        pad_str("来源 Agent", w_agent, "left")
+    )
+    print("─" * term_width)
+
+    for m in models:
+        agents_str = ",".join(m.get("agents", {}).keys())
+        if display_len(agents_str) > w_agent:
+            agents_str = agents_str[:w_agent - 2] + "…"
+        print(
+            pad_str(m.get("model", ""), w_name, "left") + " │ " +
+            pad_str(format_tokens(m.get("totalTokens", 0)), w_tok, "right") + " │ " +
+            pad_str(f"{m.get('totalTokens', 0) / total_tok * 100:.1f}%", w_pct, "right") + " │ " +
+            pad_str(f"{m.get('calls', 0):,}", w_call, "right") + " │ " +
+            pad_str(agents_str, w_agent, "left")
+        )
+
+    print("─" * term_width)
+    print(f"  合计: {len(models)} 个模型 │ {format_tokens(totals.get('totalTokens', 0))} Tokens │ "
+          f"{totals.get('calls', 0):,} 次调用")
+
+    unknown_tok = totals.get("unknownTokens", 0)
+    if unknown_tok:
+        print(f"  ⚠️  未能识别模型的数据占比: {unknown_tok / total_tok * 100:.1f}%"
+              f"（已计入合计，未从统计中剔除）")
+    print("=" * term_width)
+
 def print_usage_hint():
     """打印 CLI 使用帮助信息"""
     print("=" * 78)
@@ -522,7 +586,8 @@ def print_usage_hint():
     print("用法:")
     print("  ccu [agent名称] [模式选项] [排序选项]     # 极简命令")
     print("  myccusage <agent参数> [模式选项] [排序选项]")
-    print("  ccu web [--port <端口>]                  # 启动网页前端仪表盘\n")
+    print("  ccu web [--port <端口>]                  # 启动网页前端仪表盘")
+    print("  ccu models [agent名称]                   # 按实际调用的模型维度排行\n")
     print("支持的 Agent (直接输入名称即可，无需 --):")
     print("  agy, antigravity        Google Antigravity (App + CLI + IDE)")
     print("  claude                  Claude Code")
@@ -544,6 +609,8 @@ def print_usage_hint():
     print("  ccu claude                    # Claude Code 每日会话账本")
     print("  ccu codex -s                  # Codex 项目全生命周期总览")
     print("  ccu web                       # 一键启动 Web 仪表盘")
+    print("  ccu models                    # 按模型维度的全 Agent 用量排行")
+    print("  ccu models agy                # 仅查看 Antigravity 的模型用量分布")
     print("  ccu sync                      # 一键执行多端 Git 数据同步 (拉取/合并/推送)")
     print("  ccu sync --init <git_url>     # 首次绑定私有同步仓库")
     print("  ccu sync --status             # 查看当前设备与多端同步状态")
@@ -705,6 +772,7 @@ def main(raw_args=None):
     sort_by_tokens = False
     is_web_mode = False
     is_dock_mode = False
+    is_models_mode = False
     web_port = 8488
     is_daemon = False
     auto_open = True
@@ -713,8 +781,11 @@ def main(raw_args=None):
     i = 0
     while i < len(raw_args):
         a = raw_args[i]
+        # 解析模型维度排行模式标记 (可与 agent 名称组合，如 `ccu models agy`)
+        if a in ("models", "--models"):
+            is_models_mode = True
         # 解析 Dock 模式标记
-        if a in ("--dock", "dock"):
+        elif a in ("--dock", "dock"):
             is_dock_mode = True
         # 解析 Web 模式标记
         elif a in ("--web", "-w", "web", "ui"):
@@ -776,6 +847,15 @@ def main(raw_args=None):
     if is_web_mode:
         from .web.server import start_server
         start_server(port=web_port, default_agent=agent_type or "agy", auto_open=auto_open, daemon_mode=is_daemon)
+        return
+
+    # 模型维度排行模式（`ccu models` 全局 / `ccu models agy` 限定单个 Agent）
+    if is_models_mode:
+        try:
+            render_model_table(get_model_breakdown(agent_type), agent_type)
+        except Exception as e:
+            print(f"\n❌ 获取模型维度数据失败: {e}", file=sys.stderr)
+            sys.exit(1)
         return
 
     # CLI 模式下若未指定具体 Agent，直接输出今日多 Agent 消耗速报

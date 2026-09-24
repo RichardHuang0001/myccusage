@@ -22,7 +22,8 @@ from ..core import (
     get_daily_data,
     get_session_data,
     get_all_agents_summary,
-    get_today_quick_summary
+    get_today_quick_summary,
+    get_model_breakdown,
 )
 from ..sync import (
     load_sync_config,
@@ -384,6 +385,29 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     data = get_session_data(agent, sort_by_tokens=sort_by_tokens)
                 else:
                     data = get_daily_data(agent, sort_by_tokens=sort_by_tokens)
+                DataCache.set(cache_key, data)
+                self.send_json(data)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        if path == "/api/models":
+            # 按「实际使用的模型」维度聚合（只读适配器已产出的 models 子结构，不新增任何扫描）
+            # 与 /api/data 同源同口径：模型明细之和恒等于对应会话的 totalTokens
+            agent = query.get("agent", ["all"])[0]
+            target = None if agent in ("all", "") else agent
+            if target is not None and target not in SUPPORTED_AGENTS:
+                self.send_json({"error": f"不支持的 Agent: {target}"}, 400)
+                return
+
+            cache_key = (agent, "models", False)
+            cached = DataCache.get(cache_key)
+            if cached is not None:
+                self.send_json(cached)
+                return
+
+            try:
+                data = get_model_breakdown(target)
                 DataCache.set(cache_key, data)
                 self.send_json(data)
             except Exception as e:

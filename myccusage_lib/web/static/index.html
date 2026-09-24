@@ -136,6 +136,9 @@
             <button class="tab-btn" data-mode="session">
               <span class="tab-icon">🗂️</span> 项目会话详情 (Session)
             </button>
+            <button class="tab-btn" data-mode="models">
+              <span class="tab-icon">🤖</span> 模型维度 (Models)
+            </button>
           </div>
           <!-- 计价模型下拉选择器 (支持管理模型、智能导入与记忆选择) -->
           <div class="pricing-dropdown-container" id="pricingDropdownContainer">
@@ -329,6 +332,10 @@
       <section class="all-agents-section" id="allAgentsSection" style="display: none;">
         <div class="section-title">
           <span>🌟 全 AI 编程 Agent 用量与支出分布</span>
+          <button class="btn btn-sm" id="btnViewModelBreakdown" type="button"
+                  title="按实际调用的模型查看全局用量与调用次数分布">
+            🤖 模型维度分布
+          </button>
         </div>
         <div class="agents-overview-grid" id="agentsOverviewGrid">
           <!-- 动态渲染 8 大 Agent 卡片 -->

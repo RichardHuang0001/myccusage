@@ -1642,6 +1642,12 @@
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.mode = mode;
+      const searchBox = document.getElementById('searchInput');
+      if (searchBox) {
+        searchBox.placeholder = mode === 'models'
+          ? '实时过滤模型名称...'
+          : '实时过滤标题、Session ID、日期...';
+      }
       loadData();
     });
 
@@ -1846,6 +1852,17 @@
   }
 
   // 数据拉取与渲染
+  // 全景对比视图中的「模型维度分布」入口
+  (function bindModelBreakdownEntry() {
+    const btn = document.getElementById('btnViewModelBreakdown');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        state.mode = 'models';
+        loadData();
+      });
+    }
+  })();
+
   async function loadData() {
     el.ledgerContainer.innerHTML = `
       <div class="loading-state">
@@ -1855,6 +1872,16 @@
     `;
 
     if (state.agent === 'all') {
+      // 全景模式下的「模型维度」视图：隐藏图表与对比卡片，仅呈现跨 Agent 的全局模型分布
+      if (state.mode === 'models') {
+        el.chartsSection.style.display = 'none';
+        el.allAgentsSection.style.display = 'none';
+        if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+        if (el.tableSection) el.tableSection.style.display = 'block';
+        if (el.modeSelector) el.modeSelector.style.display = 'none';
+        await loadAndRenderModels();
+        return;
+      }
       // 全景模式：图表区与各 Agent 对比卡片区全部显示，展开竞赛折线图，隐藏单 Agent 会话账本区
       el.chartsSection.style.display = 'grid';
       el.allAgentsSection.style.display = 'block';
@@ -1879,8 +1906,12 @@
     if (el.raceChartSection) el.raceChartSection.style.display = 'none';
     if (el.tableSection) el.tableSection.style.display = 'block';
 
+    // 模型维度视图复用 daily 口径的 KPI / 趋势图 / 费用（口径完全不变），
+    // 仅把下方表格区替换为「按模型」聚合视图；两者同源，Token 明细之和天然守恒。
+    const dataMode = state.mode === 'models' ? 'daily' : state.mode;
+
     try {
-      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}`;
+      const url = `/api/data?agent=${state.agent}&mode=${dataMode}&sort=${state.sort}`;
       const res = await fetch(url);
       const json = await res.json();
 
@@ -1890,6 +1921,10 @@
 
       state.data = json;
       renderDashboard(json);
+
+      if (state.mode === 'models') {
+        await loadAndRenderModels();
+      }
     } catch (err) {
       el.ledgerContainer.innerHTML = `
         <div class="empty-state">
@@ -2718,8 +2753,123 @@
   }
 
   // 4. 账本/项目列表渲染与过滤
+  // 4.0 模型维度视图：数据来自 /api/models（复用同一套底层聚合，口径与 daily/session 一致）
+  async function loadAndRenderModels() {
+    el.ledgerContainer.innerHTML = `
+      <div class="loading-state">
+        <div class="spinner"></div>
+        <p>正在聚合模型维度数据...</p>
+      </div>
+    `;
+    try {
+      const res = await fetch(`/api/models?agent=${state.agent}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      state.modelsData = json;
+      renderModelRows();
+    } catch (err) {
+      el.ledgerContainer.innerHTML = `
+        <div class="empty-state">
+          <p>⚠️ 无法加载模型维度数据: ${err.message}</p>
+        </div>
+      `;
+      el.recordCounter.textContent = `共 0 个模型`;
+    }
+  }
+
+  function renderModelRows() {
+    const data = state.modelsData;
+    if (!data) return;
+
+    const q = state.searchQuery;
+    const all = data.models || [];
+    const models = q ? all.filter(m => (m.model || '').toLowerCase().includes(q)) : all;
+
+    if (!models.length) {
+      el.ledgerContainer.innerHTML = `<div class="empty-state">🔍 未找到匹配的模型</div>`;
+      el.recordCounter.textContent = `共 0 个模型`;
+      return;
+    }
+
+    const totals = data.totals || {};
+    const totalTok = totals.totalTokens || 1;
+
+    let rowsHtml = '';
+    models.slice(0, 200).forEach((m, idx) => {
+      const pct = (m.totalTokens / totalTok) * 100;
+      const agents = Object.keys(m.agents || {});
+      const isUnknown = m.model === 'unknown';
+      rowsHtml += `
+        <tr class="${isUnknown ? 'row-unknown-model' : ''}">
+          <td class="col-rank">${idx + 1}</td>
+          <td class="col-model">
+            <span class="model-name">${escapeHtml(m.model)}</span>
+            ${isUnknown ? '<span class="badge badge-orange">未识别</span>' : ''}
+          </td>
+          <td class="col-tokens">${formatTokens(m.totalTokens)}</td>
+          <td class="col-share">
+            <div class="share-cell">
+              <div class="share-bar"><div class="share-bar-fill" style="width:${Math.min(100, pct).toFixed(2)}%"></div></div>
+              <span class="share-pct">${pct.toFixed(1)}%</span>
+            </div>
+          </td>
+          <td class="col-calls">${(m.calls || 0).toLocaleString()}</td>
+          <td class="col-agents">${agents.map(a => `<span class="badge badge-subtle">${escapeHtml(a)}</span>`).join(' ')}</td>
+        </tr>
+      `;
+    });
+
+    const unknownPct = ((totals.unknownTokens || 0) / totalTok) * 100;
+    const unknownNote = unknownPct > 0
+      ? `<div class="model-unknown-note">⚠️ 未能识别模型的数据占比 <strong>${unknownPct.toFixed(1)}%</strong>（已计入合计，未从统计中剔除）</div>`
+      : '';
+
+    const backBtn = state.agent === 'all'
+      ? '<button class="btn btn-sm model-back-btn" id="btnBackToOverview" type="button">← 返回全景对比</button>'
+      : '';
+
+    el.ledgerContainer.innerHTML = `
+      <div class="model-summary-bar">
+        <div class="model-summary-item"><span class="ms-label">模型总数</span><span class="ms-value">${all.length}</span></div>
+        <div class="model-summary-item"><span class="ms-label">Token 合计</span><span class="ms-value">${formatTokens(totals.totalTokens || 0)}</span></div>
+        <div class="model-summary-item"><span class="ms-label">调用次数</span><span class="ms-value">${(totals.calls || 0).toLocaleString()}</span></div>
+        ${backBtn}
+        ${unknownNote}
+      </div>
+      <div class="session-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-rank">序号</th>
+              <th class="col-model">模型名称</th>
+              <th class="col-tokens">Token 总量</th>
+              <th class="col-share">占比</th>
+              <th class="col-calls">调用次数</th>
+              <th class="col-agents">来源 Agent</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+    el.recordCounter.textContent = `共 ${all.length} 个模型${q ? ` (匹配 ${models.length})` : ''}`;
+
+    const back = document.getElementById('btnBackToOverview');
+    if (back) {
+      back.addEventListener('click', () => {
+        state.mode = 'daily';
+        loadData();
+      });
+    }
+  }
+
   function filterAndRenderLedger() {
     if (!state.data) return;
+    // 模型维度视图走独立渲染路径（数据源为 /api/models，与 /api/data 同源同口径）
+    if (state.mode === 'models') {
+      renderModelRows();
+      return;
+    }
     const data = state.data;
     const q = state.searchQuery;
 
