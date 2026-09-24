@@ -14,6 +14,7 @@ import concurrent.futures
 from datetime import datetime
 from collections import OrderedDict
 from .adapters import ADAPTERS
+from .adapters.base import UNKNOWN_MODEL
 from .sync import get_remote_agent_data, get_remote_fingerprint, get_remote_agent_ids
 
 # 星期常量映射
@@ -963,4 +964,99 @@ def get_today_quick_summary(force_refresh=False):
         _TODAY_CACHE["data"] = result
 
     return result
+
+
+def get_model_breakdown(agent_type=None):
+    """
+    按「实际使用的模型」维度聚合 token 与调用次数。
+
+    实现要点（保证高性能）：
+    - **只读**适配器已经产出的 daily_map（其中已含 models 子结构），不新增任何文件扫描；
+    - 一次遍历同时产出「全局 / 按 Agent / 按日期」三个视图，不做重复聚合；
+    - 与 get_daily_data 等既有路径完全解耦，互不影响。
+
+    参数:
+      agent_type: 限定单个 Agent；None 表示全部已安装的 Agent
+
+    返回:
+      {
+        "models":  [ {model, inputTokens, cacheReadTokens, outputTokens,
+                      totalTokens, calls, agents: {aid: {totalTokens, calls}}} ],  # 按 token 降序
+        "byAgent": { aid: [ ...同结构... ] },
+        "byDate":  { "YYYY-MM-DD": [ ...同结构... ] },
+        "totals":  { models, totalTokens, calls, unknownTokens, unknownCalls },
+      }
+
+    注：totals.unknownTokens 用于暴露「未能识别模型」的数据占比，
+    便于观察各 Agent 的模型覆盖率，而不是把它隐藏在明细里。
+    """
+    targets = [agent_type] if agent_type else list(ADAPTERS.keys())
+
+    global_map: dict[str, dict] = {}
+    agent_maps: dict[str, dict] = {}
+    date_maps: dict[str, dict] = {}
+
+    def _add(container: dict, model: str, mv: dict) -> dict:
+        """把一条 models 明细累加进指定容器（容器统一为 {model: entry} 结构）。"""
+        e = container.get(model)
+        if e is None:
+            e = container[model] = {
+                "model": model,
+                "inputTokens": 0, "cacheReadTokens": 0,
+                "outputTokens": 0, "totalTokens": 0, "calls": 0,
+            }
+        e["inputTokens"] += mv.get("inputTokens", 0)
+        e["cacheReadTokens"] += mv.get("cacheReadTokens", 0)
+        e["outputTokens"] += mv.get("outputTokens", 0)
+        e["totalTokens"] += mv.get("totalTokens", 0)
+        e["calls"] += mv.get("calls", 0)
+        return e
+
+    for aid in targets:
+        adapter = ADAPTERS.get(aid)
+        if not adapter or not adapter.is_available():
+            continue
+        try:
+            daily_map, _ = adapter.fetch_data()
+        except Exception:
+            continue
+
+        aid_map = agent_maps.setdefault(aid, {})
+        for d_str, entries in daily_map.items():
+            day_map = date_maps.setdefault(d_str, {})
+            for entry in entries:
+                models = entry.get("models")
+                if not models:
+                    continue
+                for mname, mv in models.items():
+                    g = _add(global_map, mname, mv)
+                    # 模型 -> 来源 Agent 的明细（用于展示"这个模型被哪些 Agent 用过"）
+                    # 注意 agents 子结构按需创建，避免给 byAgent / byDate 的条目也带上它
+                    agents_of_model = g.setdefault("agents", {})
+                    ag = agents_of_model.get(aid)
+                    if ag is None:
+                        ag = agents_of_model[aid] = {"totalTokens": 0, "calls": 0}
+                    ag["totalTokens"] += mv.get("totalTokens", 0)
+                    ag["calls"] += mv.get("calls", 0)
+                    _add(aid_map, mname, mv)
+                    _add(day_map, mname, mv)
+
+    def _sorted(container: dict) -> list[dict]:
+        return sorted(container.values(), key=lambda x: -x["totalTokens"])
+
+    models = _sorted(global_map)
+    unknown = global_map.get(UNKNOWN_MODEL) or {}
+    return {
+        "models": models,
+        "byAgent": {aid: _sorted(m) for aid, m in agent_maps.items()},
+        "byDate": {d: _sorted(m) for d, m in sorted(date_maps.items())},
+        "totals": {
+            "models": len(models),
+            "totalTokens": sum(x["totalTokens"] for x in models),
+            "calls": sum(x["calls"] for x in models),
+            "unknownTokens": unknown.get("totalTokens", 0),
+            "unknownCalls": unknown.get("calls", 0),
+        },
+    }
+
 

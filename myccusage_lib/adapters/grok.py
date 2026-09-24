@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
 
 class GrokAdapter(BaseAgentAdapter):
     """Grok 适配器，支持 SQLite 及本地日志文件的解析与防抖缓存"""
@@ -181,7 +181,8 @@ class GrokAdapter(BaseAgentAdapter):
                                 date_str = ts_to_date_str(ts) if ts else "1970-01-01"
                                 iso_str = ts_to_iso(ts) if ts else ""
 
-                                records.append((sid, date_str, iso_str, inp, c_read, out, tot))
+                                # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
+                                records.append((sid, date_str, iso_str, inp, c_read, out, tot, UNKNOWN_MODEL))
                     except Exception:
                         pass
                     # 更新文件防抖缓存

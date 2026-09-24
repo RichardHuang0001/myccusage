@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, get_today_midnight_ts, get_candidate_home_dirs
+from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, get_today_midnight_ts, get_candidate_home_dirs, UNKNOWN_MODEL
 
 class OpenCodeAdapter(BaseAgentAdapter):
     """OpenCode 原生适配器，读取 SQLite 获取数据"""
@@ -91,8 +91,7 @@ class OpenCodeAdapter(BaseAgentAdapter):
         if cached is not None:
             return cached
 
-        daily_map_dict = {}
-        session_map_dict = {}
+        records = []
 
         for db in self.db_paths:
             try:
@@ -147,45 +146,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                         sessions_with_parts.add(sid)
                         date_str = ms_to_date_str(tc) if tc else "1970-01-01"
                         iso_str = ms_to_iso(tc) if tc else ""
-
-                        # 1. 每日切片数据聚合
-                        if date_str not in daily_map_dict:
-                            daily_map_dict[date_str] = {}
-                        if sid not in daily_map_dict[date_str]:
-                            daily_map_dict[date_str][sid] = {
-                                "sessionId": sid,
-                                "date": date_str,
-                                "inputTokens": 0,
-                                "cacheReadTokens": 0,
-                                "outputTokens": 0,
-                                "totalTokens": 0,
-                                "lastActivity": iso_str,
-                            }
-                        ds = daily_map_dict[date_str][sid]
-                        ds["inputTokens"] += inp + cw
-                        ds["cacheReadTokens"] += cr
-                        ds["outputTokens"] += out
-                        ds["totalTokens"] += tot
-                        if iso_str > ds["lastActivity"]:
-                            ds["lastActivity"] = iso_str
-
-                        # 2. 会话生命周期累计
-                        if sid not in session_map_dict:
-                            session_map_dict[sid] = {
-                                "sessionId": sid,
-                                "inputTokens": 0,
-                                "cacheReadTokens": 0,
-                                "outputTokens": 0,
-                                "totalTokens": 0,
-                                "lastActivity": iso_str,
-                            }
-                        ss = session_map_dict[sid]
-                        ss["inputTokens"] += inp + cw
-                        ss["cacheReadTokens"] += cr
-                        ss["outputTokens"] += out
-                        ss["totalTokens"] += tot
-                        if iso_str > ss["lastActivity"]:
-                            ss["lastActivity"] = iso_str
+                        # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
+                        records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, UNKNOWN_MODEL))
                     except Exception:
                         pass
 
@@ -230,51 +192,15 @@ class OpenCodeAdapter(BaseAgentAdapter):
                     iso_str = ms_to_iso(act_time) if act_time else ""
                     tot = inp + cr + cw + out
 
-                    if date_str not in daily_map_dict:
-                        daily_map_dict[date_str] = {}
-                    if sid not in daily_map_dict[date_str]:
-                        daily_map_dict[date_str][sid] = {
-                            "sessionId": sid,
-                            "date": date_str,
-                            "inputTokens": inp + cw,
-                            "cacheReadTokens": cr,
-                            "outputTokens": out,
-                            "totalTokens": tot,
-                            "lastActivity": iso_str,
-                        }
-                    else:
-                        ds = daily_map_dict[date_str][sid]
-                        ds["inputTokens"] += inp + cw
-                        ds["cacheReadTokens"] += cr
-                        ds["outputTokens"] += out
-                        ds["totalTokens"] += tot
-                        if iso_str > ds["lastActivity"]:
-                            ds["lastActivity"] = iso_str
-
-                    if sid not in session_map_dict:
-                        session_map_dict[sid] = {
-                            "sessionId": sid,
-                            "inputTokens": inp + cw,
-                            "cacheReadTokens": cr,
-                            "outputTokens": out,
-                            "totalTokens": tot,
-                            "lastActivity": iso_str,
-                        }
-                    else:
-                        ss = session_map_dict[sid]
-                        ss["inputTokens"] += inp + cw
-                        ss["cacheReadTokens"] += cr
-                        ss["outputTokens"] += out
-                        ss["totalTokens"] += tot
-                        if iso_str > ss["lastActivity"]:
-                            ss["lastActivity"] = iso_str
+                    # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
+                    records.append((sid, date_str, iso_str, inp + cw, cr, out, tot, UNKNOWN_MODEL))
 
                 conn.close()
             except Exception:
                 pass
 
-        daily_map = {d: list(s_dict.values()) for d, s_dict in daily_map_dict.items()}
-        session_list = list(session_map_dict.values())
+        # 复用基类的统一聚合（含模型维度），避免在此重复实现累加逻辑
+        daily_map, session_list = self._accumulate_records(records)
 
         self._store_full_result(fp, daily_map, session_list, today_only)
 

@@ -10,7 +10,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, normalize_model_name
 
 class PiAdapter(BaseAgentAdapter):
     """Pi Agent 适配器，解析本地 jsonl 日志以提取信息"""
@@ -146,7 +146,8 @@ class PiAdapter(BaseAgentAdapter):
                                 out = u.get("output", 0)
                                 tot = u.get("totalTokens", 0) or (inp + cr + out)
                                 if tot > 0:
-                                    records.append((sid, date_str, iso_str, inp, cr, out, tot))
+                                    model = normalize_model_name((obj.get("message") or {}).get("model") or obj.get("modelId"))
+                                    records.append((sid, date_str, iso_str, inp, cr, out, tot, model))
                     except Exception:
                         pass
                     # 将解析得到的结果存入缓存，下次无修改直接命中

@@ -11,7 +11,7 @@ import os
 import glob
 import json
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, normalize_model_name
 
 class ClaudeAdapter(BaseAgentAdapter):
     """Claude Code 适配器，处理本地历史日志文件"""
@@ -197,7 +197,8 @@ class ClaudeAdapter(BaseAgentAdapter):
                                 key = mid if mid else f"line_{idx}"
                                 # 根据 message.id 幂等去重
                                 # 保留最新的那一次上报（通常包含完整的 thinking + output_tokens），避免重复计算
-                                seen_msg_ids[key] = (sid, date_str, iso_str, inp + cw, cr, out, tot)
+                                seen_msg_ids[key] = (sid, date_str, iso_str, inp + cw, cr, out, tot,
+                                                     normalize_model_name(msg.get("model")))
 
                         records = list(seen_msg_ids.values())
                     except Exception:

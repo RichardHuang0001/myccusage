@@ -13,7 +13,7 @@ import glob
 import json
 import re
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex 的本地日志数据适配器"""
@@ -253,7 +253,12 @@ class CodexAdapter(BaseAgentAdapter):
                                 delta_tot = delta_inp + delta_cached + delta_out
 
                                 if delta_tot > 0:
-                                    records.append((sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot))
+                                    # TODO(二期): 改用会话级归属。
+                                    # 实测依据：codex 的 payload.type == "token_count" 记录（即 token 来源）
+                                    # 共 4018 条，全部不含 model；模型名只出现在 message / reasoning
+                                    # 等其他类型记录中（gpt-5.4 / gpt-5.3-codex 等）。
+                                    # 因此必须按"会话级归属"处理，与 grok/agy 同类。
+                                    records.append((sid, date_str, iso_str, delta_inp, delta_cached, delta_out, delta_tot, UNKNOWN_MODEL))
                                     prev_raw_inp = cur_raw_inp
                                     prev_cached = cur_cached
                                     prev_out = cur_out

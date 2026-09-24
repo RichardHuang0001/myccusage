@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from .base import BaseAgentAdapter, ts_to_iso, ts_to_date_str, get_today_midnight_ts, get_candidate_home_dirs
+from .base import (
+    BaseAgentAdapter, ts_to_iso, ts_to_date_str, get_today_midnight_ts,
+    get_candidate_home_dirs, normalize_model_name,
+)
 
 class HermesAdapter(BaseAgentAdapter):
     """Hermes Agent 适配器，通过直连 SQLite 数据库进行高速查询"""
@@ -85,6 +88,14 @@ class HermesAdapter(BaseAgentAdapter):
         """
         查询 Hermes 数据库提取统计数据，按时间正序返回每日切片和汇总。
         - 支持 today_only: 仅扫描今日活跃会话 (SQL 过滤提速)
+        - 模型维度取 sessions.model（会话级）。
+
+        关于 session_model_usage 表的取舍（实测结论）：
+        该表粒度更细（可表达"一个会话内用了多个模型"）且自带 api_call_count，
+        但其 token 合计为 200,975,377，而 sessions 为 183,548,877，相差约 9.5%。
+        为守住"改造前后 token 总量零回归"这条硬门槛，本实现仍以 sessions 作为
+        唯一的 token 来源，仅额外取它的 model 列。session_model_usage 的更细粒度
+        可作为后续增强（需先解决两表口径差异）。
         """
         if not self.is_available():
             return {}, []
@@ -95,8 +106,7 @@ class HermesAdapter(BaseAgentAdapter):
         if cached is not None:
             return cached
 
-        daily_map = {}
-        session_list = []
+        records = []
 
         for db in self.db_paths:
             try:
@@ -123,44 +133,26 @@ class HermesAdapter(BaseAgentAdapter):
                         ended_at,
                         input_tokens,
                         output_tokens,
-                        cache_read_tokens
+                        cache_read_tokens,
+                        model
                     FROM sessions
                     WHERE {where_sql}
                     ORDER BY started_at ASC
                 """
                 for row in c.execute(sql, params):
-                    sid, st, et, inp, out, cr = row
+                    sid, st, et, inp, out, cr, model = row
                     act_time = et or st or 0
                     date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
                     iso_str = ts_to_iso(act_time) if act_time else ""
                     tot = inp + cr + out
-
-                    # 每日切片记录 (按天聚合)
-                    if date_str not in daily_map:
-                        daily_map[date_str] = []
-                    daily_map[date_str].append({
-                        "sessionId": sid,
-                        "date": date_str,
-                        "inputTokens": inp,
-                        "cacheReadTokens": cr,
-                        "outputTokens": out,
-                        "totalTokens": tot,
-                        "lastActivity": iso_str
-                    })
-
-                    # 项目生命周期汇总记录
-                    session_list.append({
-                        "sessionId": sid,
-                        "inputTokens": inp,
-                        "cacheReadTokens": cr,
-                        "outputTokens": out,
-                        "totalTokens": tot,
-                        "lastActivity": iso_str
-                    })
+                    records.append((sid, date_str, iso_str, inp, cr, out, tot,
+                                    normalize_model_name(model)))
                 conn.close()
             except Exception:
                 pass
 
+        # 复用基类的统一聚合（含模型维度），避免在此重复实现累加逻辑
+        daily_map, session_list = self._accumulate_records(records)
         self._store_full_result(fp, daily_map, session_list, today_only)
 
         return daily_map, session_list

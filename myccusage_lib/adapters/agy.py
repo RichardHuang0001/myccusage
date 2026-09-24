@@ -16,7 +16,7 @@ import re
 import glob
 import sqlite3
 from datetime import datetime, timezone
-from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, scan_files_fast, get_candidate_home_dirs, UNKNOWN_MODEL
 
 def parse_proto(b: bytes) -> list[tuple[int, int, any]]:
     """
@@ -377,7 +377,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                                     dt = datetime.fromtimestamp(ts_sec)
                                     date_str = dt.strftime("%Y-%m-%d")
                                     iso_str = datetime.fromtimestamp(ts_sec, timezone.utc).isoformat()
-                                    records.append((sid, date_str, iso_str, inp, cr, out, tot))
+                                    # TODO(二期): 替换为真实模型提取逻辑（见 docs/tasks/第二期-归属推导型.md）
+                                    records.append((sid, date_str, iso_str, inp, cr, out, tot, UNKNOWN_MODEL))
                         conn.close()
                     except Exception:
                         # 保护性退避：若读取发生碰撞（如 Agent 正在排他写库锁死），安全回退使用上次成功快照，避免空数据污染

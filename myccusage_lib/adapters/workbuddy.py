@@ -11,7 +11,7 @@ import os
 import glob
 import json
 import sqlite3
-from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, scan_files_fast, get_candidate_home_dirs
+from .base import BaseAgentAdapter, ms_to_iso, ms_to_date_str, scan_files_fast, get_candidate_home_dirs, normalize_model_name
 
 class WorkBuddyAdapter(BaseAgentAdapter):
     """WorkBuddy 适配器，结合 SQLite 的元数据与 JSONL 日志文件的用量数据进行分析"""
@@ -208,7 +208,8 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                         miss = max(0, inp - hit)
                                         out = u.get("outputTokens", 0)
                                 tot = hit + miss + out
-                                records.append((sid, date_str, iso_str, miss, hit, out, tot))
+                                model = normalize_model_name(pd.get("requestModelName") or pd.get("requestModelId") or pd.get("model"))
+                                records.append((sid, date_str, iso_str, miss, hit, out, tot, model))
                     except Exception:
                         records = cached[2] if cached else []
                     else:
