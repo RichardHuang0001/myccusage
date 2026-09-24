@@ -165,7 +165,7 @@
         </div>
 
         <div class="toolbar-right">
-          <div class="sort-group">
+          <div class="sort-group" id="sortGroup">
             <span class="sort-label">排序方式:</span>
             <button class="sort-btn active" id="btnSortTime" data-sort="time">时间倒序 (最新在顶)</button>
             <button class="sort-btn" id="btnSortTokens" data-sort="tokens">Token 降序排行</button>
@@ -173,8 +173,65 @@
         </div>
       </div>
 
+      <!-- 模型维度视图 (Models)
+           独立布局：不再复用 Token 统计的 KPI 卡片与趋势/环形图，只聚焦
+           「选定时间范围内各实际模型的消耗量 / 占比 / 计价 / 调用次数」。 -->
+      <section class="models-section" id="modelsSection" style="display: none;">
+        <!-- 控制条：时间范围 · 计价方式 · 占比口径 · 费率表 · 过滤 -->
+        <div class="models-toolbar">
+          <div class="models-control">
+            <span class="models-control-label">时间范围</span>
+            <select id="modelRangeSelect" class="models-select">
+              <option value="today">当天</option>
+              <option value="7d" selected>近 7 天</option>
+              <option value="30d">近 30 天</option>
+              <option value="all">全部历史</option>
+              <option value="custom">自定义…</option>
+            </select>
+          </div>
+          <div class="models-control models-custom-range" id="modelCustomRange" style="display: none;">
+            <input type="date" id="modelStartDate" class="models-date" />
+            <span class="models-range-sep">~</span>
+            <input type="date" id="modelEndDate" class="models-date" />
+          </div>
+          <div class="models-control">
+            <span class="models-control-label">计价方式</span>
+            <select id="modelPricingSelect" class="models-select">
+              <option value="equivalent">等效计价（原始）</option>
+              <option value="unit">按模型单价（费率表）</option>
+            </select>
+          </div>
+          <div class="models-control">
+            <span class="models-control-label">占比口径</span>
+            <select id="modelShareBasisSelect" class="models-select">
+              <option value="tokens">Token 消耗</option>
+              <option value="cost">费用支出</option>
+            </select>
+          </div>
+          <div class="models-control models-control-right">
+            <button class="btn btn-sm" id="btnOpenRateManager" type="button"
+                    title="管理 / 导入模型费率表（供「按模型单价」计价使用）">
+              ⚙️ 费率表
+            </button>
+            <div class="search-box models-search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="modelFilterInput" placeholder="过滤模型名称..." autocomplete="off" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 选定范围的汇总指标 -->
+        <div class="models-summary-bar" id="modelSummaryBar"></div>
+
+        <!-- Top 模型占比堆叠条与图例 -->
+        <div class="models-share-card" id="modelShareChart"></div>
+
+        <!-- 模型明细表 -->
+        <div class="session-table-wrap" id="modelTableWrap"></div>
+      </section>
+
       <!-- KPI 核心指标卡片 (8 卡 4x2 黄金排版) -->
-      <section class="kpi-grid">
+      <section class="kpi-grid" id="kpiSection">
         <!-- 1. 全周期 Token -->
         <div class="kpi-card">
           <div class="kpi-header">
@@ -332,10 +389,6 @@
       <section class="all-agents-section" id="allAgentsSection" style="display: none;">
         <div class="section-title">
           <span>🌟 全 AI 编程 Agent 用量与支出分布</span>
-          <button class="btn btn-sm" id="btnViewModelBreakdown" type="button"
-                  title="按实际调用的模型查看全局用量与调用次数分布">
-            🤖 模型维度分布
-          </button>
         </div>
         <div class="agents-overview-grid" id="agentsOverviewGrid">
           <!-- 动态渲染 8 大 Agent 卡片 -->

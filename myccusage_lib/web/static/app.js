@@ -207,7 +207,16 @@
     highlightedAgent: null,
     hiddenAgents: new Set(),
     raceChartInstance: null,
-    syncState: null
+    syncState: null,
+
+    // 模型维度视图 (Models) 专属状态
+    modelsData: null,          // /api/models 的完整返回（含 byDate，供前端按时段聚合）
+    modelRange: '7d',          // today | 7d | 30d | all | custom
+    modelPricingMode: 'equivalent', // equivalent(等效计价) | unit(按模型单价)
+    modelShareBasis: 'tokens', // tokens | cost —— 占比条的统计基数
+    modelStart: '',
+    modelEnd: '',
+    modelFilter: ''
   };
 
   // DOM 元素缓存
@@ -299,10 +308,26 @@
 
     // 视图容器
     chartsSection: document.getElementById('chartsSection'),
+    kpiSection: document.getElementById('kpiSection'),
     allAgentsSection: document.getElementById('allAgentsSection'),
     agentsOverviewGrid: document.getElementById('agentsOverviewGrid'),
     tableSection: document.getElementById('tableSection'),
     raceChartSection: document.getElementById('raceChartSection'),
+    sortGroup: document.getElementById('sortGroup'),
+
+    // 模型维度视图 (Models)
+    modelsSection: document.getElementById('modelsSection'),
+    modelRangeSelect: document.getElementById('modelRangeSelect'),
+    modelCustomRange: document.getElementById('modelCustomRange'),
+    modelStartDate: document.getElementById('modelStartDate'),
+    modelEndDate: document.getElementById('modelEndDate'),
+    modelPricingSelect: document.getElementById('modelPricingSelect'),
+    modelShareBasisSelect: document.getElementById('modelShareBasisSelect'),
+    btnOpenRateManager: document.getElementById('btnOpenRateManager'),
+    modelFilterInput: document.getElementById('modelFilterInput'),
+    modelSummaryBar: document.getElementById('modelSummaryBar'),
+    modelShareChart: document.getElementById('modelShareChart'),
+    modelTableWrap: document.getElementById('modelTableWrap'),
     raceChartCanvas: document.getElementById('raceChartCanvas'),
     raceYAxisLeft: document.getElementById('raceYAxisLeft'),
     raceScrollViewport: document.getElementById('raceScrollViewport'),
@@ -620,6 +645,11 @@
 
   // 统一计价响应调度中心：模型切换或费率更新后，全局同步刷新当前激活视图的所有价格展示
   function updateAllPricingDisplays() {
+    // 模型维度视图：费率或计价方式变更后立即重算（纯内存重算，无网络请求）
+    if (state.mode === 'models') {
+      if (state.modelsData) renderModelsView();
+      return;
+    }
     if (state.agent === 'all') {
       if (state.allAgentsData) {
         renderAllAgentsOverview(state.allAgentsData);
@@ -1029,6 +1059,9 @@
 
   function closeModelManager() {
     el.modelManagerModal.style.display = 'none';
+    // 费率表可能在弹窗内被新增 / 编辑 / 删除（含智能导入），关闭时同步刷新模型维度视图，
+    // 使「按模型单价」计价的最新费率立即生效（纯内存重算，无网络请求）
+    if (state.mode === 'models' && state.modelsData) renderModelsView();
   }
 
   function renderManagerModelList() {
@@ -1453,6 +1486,9 @@
   }
 
   function bindEvents() {
+    // 模型维度视图控件（时间范围 / 计价方式 / 占比口径 / 费率表 / 过滤）
+    bindModelViewEvents();
+
     // 计价模型下拉展开/收起
     if (el.pricingTrigger) {
       el.pricingTrigger.addEventListener('click', (e) => {
@@ -1632,7 +1668,7 @@
       loadData();
     });
 
-    // 切换模式 (Daily vs Session)
+    // 切换视图模式 (每日账本 / 项目会话 / 模型维度)
     el.modeSelector.addEventListener('click', (e) => {
       const btn = e.target.closest('.tab-btn');
       if (!btn) return;
@@ -1642,12 +1678,6 @@
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.mode = mode;
-      const searchBox = document.getElementById('searchInput');
-      if (searchBox) {
-        searchBox.placeholder = mode === 'models'
-          ? '实时过滤模型名称...'
-          : '实时过滤标题、Session ID、日期...';
-      }
       loadData();
     });
 
@@ -1851,19 +1881,52 @@
     }
   }
 
-  // 数据拉取与渲染
-  // 全景对比视图中的「模型维度分布」入口
-  (function bindModelBreakdownEntry() {
-    const btn = document.getElementById('btnViewModelBreakdown');
-    if (btn) {
-      btn.addEventListener('click', () => {
-        state.mode = 'models';
-        loadData();
-      });
-    }
-  })();
+  // 视图区块显隐的统一调度（集中一处，避免 style.display 赋值散落各处而在新增视图时漏改）
+  //
+  // 模型维度视图采用**完全独立的布局**：不复用 Token 统计的 KPI 卡片与趋势/环形图，
+  // 因为它的口径是「选定时间范围内各实际模型的消耗量 / 占比 / 计价 / 调用次数」，
+  // 与账本口径（按日/按会话的 Token 与等效费用）无关，混排只会带来误导性的冗余文本。
+  function applyViewLayout(isModels) {
+    // 视图切换 tab 在所有模式下常显（含全景对比），使模式入口保持一致
+    if (el.modeSelector) el.modeSelector.style.display = 'flex';
+    if (el.modelsSection) el.modelsSection.style.display = isModels ? 'block' : 'none';
+    // 「排序方式」仅对账本视图有意义；模型维度自带排序口径，故在此隐藏以免误导
+    if (el.sortGroup) el.sortGroup.style.display = isModels ? 'none' : 'flex';
 
+    if (isModels) {
+      if (el.kpiSection) el.kpiSection.style.display = 'none';
+      el.chartsSection.style.display = 'none';
+      el.allAgentsSection.style.display = 'none';
+      if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+      if (el.tableSection) el.tableSection.style.display = 'none';
+      return;
+    }
+
+    if (el.kpiSection) el.kpiSection.style.display = 'grid';
+    el.chartsSection.style.display = 'grid';
+    if (state.agent === 'all') {
+      // 全景对比：展示各 Agent 对比卡片与竞赛折线图，隐藏单 Agent 账本区
+      el.allAgentsSection.style.display = 'block';
+      if (el.raceChartSection) el.raceChartSection.style.display = 'block';
+      if (el.tableSection) el.tableSection.style.display = 'none';
+    } else {
+      el.allAgentsSection.style.display = 'none';
+      if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+      if (el.tableSection) el.tableSection.style.display = 'block';
+    }
+  }
+
+  // 数据拉取与渲染
   async function loadData() {
+    // 模型维度视图：任意 Agent 选择下都是同一套独立布局与独立数据源（/api/models）
+    if (state.mode === 'models') {
+      applyViewLayout(true);
+      await loadAndRenderModels();
+      return;
+    }
+
+    applyViewLayout(false);
+
     el.ledgerContainer.innerHTML = `
       <div class="loading-state">
         <div class="spinner"></div>
@@ -1872,22 +1935,6 @@
     `;
 
     if (state.agent === 'all') {
-      // 全景模式下的「模型维度」视图：隐藏图表与对比卡片，仅呈现跨 Agent 的全局模型分布
-      if (state.mode === 'models') {
-        el.chartsSection.style.display = 'none';
-        el.allAgentsSection.style.display = 'none';
-        if (el.raceChartSection) el.raceChartSection.style.display = 'none';
-        if (el.tableSection) el.tableSection.style.display = 'block';
-        if (el.modeSelector) el.modeSelector.style.display = 'none';
-        await loadAndRenderModels();
-        return;
-      }
-      // 全景模式：图表区与各 Agent 对比卡片区全部显示，展开竞赛折线图，隐藏单 Agent 会话账本区
-      el.chartsSection.style.display = 'grid';
-      el.allAgentsSection.style.display = 'block';
-      if (el.raceChartSection) el.raceChartSection.style.display = 'block';
-      if (el.tableSection) el.tableSection.style.display = 'none';
-      if (el.modeSelector) el.modeSelector.style.display = 'none';
       try {
         const res = await fetch('/api/all');
         const json = await res.json();
@@ -1900,18 +1947,8 @@
       return;
     }
 
-    if (el.modeSelector) el.modeSelector.style.display = 'flex';
-    el.chartsSection.style.display = 'grid';
-    el.allAgentsSection.style.display = 'none';
-    if (el.raceChartSection) el.raceChartSection.style.display = 'none';
-    if (el.tableSection) el.tableSection.style.display = 'block';
-
-    // 模型维度视图复用 daily 口径的 KPI / 趋势图 / 费用（口径完全不变），
-    // 仅把下方表格区替换为「按模型」聚合视图；两者同源，Token 明细之和天然守恒。
-    const dataMode = state.mode === 'models' ? 'daily' : state.mode;
-
     try {
-      const url = `/api/data?agent=${state.agent}&mode=${dataMode}&sort=${state.sort}`;
+      const url = `/api/data?agent=${state.agent}&mode=${state.mode}&sort=${state.sort}`;
       const res = await fetch(url);
       const json = await res.json();
 
@@ -2753,9 +2790,141 @@
   }
 
   // 4. 账本/项目列表渲染与过滤
-  // 4.0 模型维度视图：数据来自 /api/models（复用同一套底层聚合，口径与 daily/session 一致）
+
+  // ------------------------------------------------------------------------
+  // 4.0 模型维度视图 (Models)
+  //
+  // 数据源：/api/models（与 /api/data 同源同口径；同步分片按设计不携带模型明细，
+  // 故异机会话统一归入 unknown，既不虚构归属又保证总量一致）。
+  //
+  // 时间范围过滤在**前端**基于 byDate 求子集完成：后端保证「遍历 byDate 求和恒等于
+  // models 合计」，且 byDate 已按「日期 × 模型 × 来源 Agent」切好，
+  // 因此切换时间范围是零网络请求的纯内存聚合，即时响应。
+  //
+  // 计价口径：
+  //   · equivalent（等效计价 / 原始）：统一按当前选中的计价模型费率折算，
+  //     与页面其它位置的费用口径完全一致，便于横向比较。
+  //   · unit（按模型单价）：每个模型按其自身费率计费，费率取自费率表
+  //     （内置预设 ∪ 用户在「⚙️ 费率表」中自定义/导入的条目）；未匹配到费率时
+  //     显式标注「费率未配置」并排除在费用合计之外，绝不虚构价格。
+  // ------------------------------------------------------------------------
+  const MODEL_SHARE_PALETTE = [
+    '#4285f4', '#f59e0b', '#10b981', '#06b6d4', '#ec4899',
+    '#8b5cf6', '#6366f1', '#f43f5e', '#14b8a6', '#eab308'
+  ];
+  const MODEL_SHARE_TOP_N = 8;
+  const MODEL_SHARE_REST_COLOR = '#64748b';
+  const MODEL_SHARE_UNKNOWN_COLOR = '#94a3b8';
+
+  function toDateStr(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function shiftDateStr(baseStr, days) {
+    const d = new Date(`${baseStr}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return toDateStr(d);
+  }
+
+  // 数据实际覆盖的日期边界（取自 byDate 的键），用于「全部历史」与日期选择器可选范围
+  function getModelDateBounds() {
+    const keys = Object.keys((state.modelsData && state.modelsData.byDate) || {});
+    if (!keys.length) {
+      const t = toDateStr(new Date());
+      return { min: t, max: t };
+    }
+    keys.sort();
+    return { min: keys[0], max: keys[keys.length - 1] };
+  }
+
+  // 把「时间范围」解析为具体起止日期（YYYY-MM-DD 字符串可直接比较，天然有序）
+  function resolveModelRange() {
+    const bounds = getModelDateBounds();
+    const today = toDateStr(new Date());
+    if (state.modelRange === 'today') return { start: today, end: today, label: '当天' };
+    if (state.modelRange === '30d') return { start: shiftDateStr(today, -29), end: today, label: '近 30 天' };
+    if (state.modelRange === 'all') return { start: bounds.min, end: bounds.max, label: '全部历史' };
+    if (state.modelRange === 'custom') {
+      const s = state.modelStart || bounds.min;
+      const e = state.modelEnd || bounds.max;
+      // 容错：用户可能把起止填反
+      return s <= e
+        ? { start: s, end: e, label: `${s} ~ ${e}` }
+        : { start: e, end: s, label: `${e} ~ ${s}` };
+    }
+    return { start: shiftDateStr(today, -6), end: today, label: '近 7 天' };
+  }
+
+  // 归一化费率键：仅保留字母与数字并转小写。
+  // 目的是让「实际模型名」与「费率表条目的 id / 显示名」能对上，例如
+  //   gemini-3.8-flash  ←→  Gemini 3.8 Flash      （显示名带空格 / 大小写差异）
+  //   deepseek-v4.1-flash ←→ DeepSeek-V4.1-Flash (高峰期)  （显示名带中文括注）
+  // 注意：正因为要剥掉括注，高峰期/低谷期这类同源条目的归一化键会相同，
+  // 故此类歧义情形必须判为「未匹配」而不是猜一个，避免用错价格。
+  function normalizeRateKey(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  // 按模型名从费率表匹配费率（内置预设 ∪ 用户自定义/导入）：
+  // ① id 精确 → ② id 忽略大小写 → ③ 归一化后匹配 id 或显示名（仅唯一命中时采纳）。
+  // ③ 是必需的：既有「智能导入」流程给新条目生成的是 `model_<时间戳>` 形式的合成 id，
+  // 永远不会等于真实模型名，因此只能靠显示名对上。
+  function findRateForModel(modelName) {
+    const all = getAllPricingModels();
+    if (all[modelName]) return all[modelName];
+
+    const lower = String(modelName || '').toLowerCase();
+    const byId = Object.keys(all).find(k => k.toLowerCase() === lower);
+    if (byId) return all[byId];
+
+    const target = normalizeRateKey(modelName);
+    if (!target) return null;
+    const candidates = [];
+    for (const k in all) {
+      if (normalizeRateKey(k) === target || normalizeRateKey(all[k].name) === target) {
+        candidates.push(all[k]);
+      }
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  // 在 [start, end] 内按模型聚合（纯内存求和，无网络请求、无文件扫描）
+  function aggregateModelsInRange(start, end) {
+    const byDate = (state.modelsData && state.modelsData.byDate) || {};
+    const map = new Map();
+    for (const d in byDate) {
+      if (d < start || d > end) continue;
+      const list = byDate[d];
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        let e = map.get(m.model);
+        if (!e) {
+          e = { model: m.model, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, agents: {} };
+          map.set(m.model, e);
+        }
+        e.inputTokens += m.inputTokens || 0;
+        e.cacheReadTokens += m.cacheReadTokens || 0;
+        e.outputTokens += m.outputTokens || 0;
+        e.totalTokens += m.totalTokens || 0;
+        e.calls += m.calls || 0;
+        const ags = m.agents;
+        if (ags) {
+          for (const aid in ags) {
+            const src = ags[aid];
+            const dst = e.agents[aid] || (e.agents[aid] = { totalTokens: 0, calls: 0 });
+            dst.totalTokens += src.totalTokens || 0;
+            dst.calls += src.calls || 0;
+          }
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
+  }
+
   async function loadAndRenderModels() {
-    el.ledgerContainer.innerHTML = `
+    el.modelSummaryBar.innerHTML = '';
+    el.modelShareChart.innerHTML = '';
+    el.modelTableWrap.innerHTML = `
       <div class="loading-state">
         <div class="spinner"></div>
         <p>正在聚合模型维度数据...</p>
@@ -2766,110 +2935,294 @@
       const json = await res.json();
       if (json.error) throw new Error(json.error);
       state.modelsData = json;
-      renderModelRows();
+      syncModelDateInputs();
+      renderModelsView();
     } catch (err) {
-      el.ledgerContainer.innerHTML = `
-        <div class="empty-state">
-          <p>⚠️ 无法加载模型维度数据: ${err.message}</p>
-        </div>
-      `;
-      el.recordCounter.textContent = `共 0 个模型`;
+      el.modelTableWrap.innerHTML = `<div class="empty-state">⚠️ 无法加载模型维度数据: ${escapeHtml(err.message)}</div>`;
     }
   }
 
-  function renderModelRows() {
-    const data = state.modelsData;
-    if (!data) return;
+  // 让日期选择器与实际数据边界对齐（仅在尚未初始化时写入默认值，之后尊重用户输入）
+  function syncModelDateInputs() {
+    if (!el.modelStartDate || !el.modelEndDate) return;
+    const bounds = getModelDateBounds();
+    [el.modelStartDate, el.modelEndDate].forEach(inp => {
+      inp.min = bounds.min;
+      inp.max = bounds.max;
+    });
+    if (!state.modelStart) state.modelStart = shiftDateStr(bounds.max, -6);
+    if (!state.modelEnd) state.modelEnd = bounds.max;
+    el.modelStartDate.value = state.modelStart;
+    el.modelEndDate.value = state.modelEnd;
+  }
 
-    const q = state.searchQuery;
-    const all = data.models || [];
-    const models = q ? all.filter(m => (m.model || '').toLowerCase().includes(q)) : all;
+  function renderModelsView() {
+    if (!state.modelsData) return;
 
-    if (!models.length) {
-      el.ledgerContainer.innerHTML = `<div class="empty-state">🔍 未找到匹配的模型</div>`;
-      el.recordCounter.textContent = `共 0 个模型`;
+    const range = resolveModelRange();
+    const rows = aggregateModelsInRange(range.start, range.end);
+
+    if (!rows.length) {
+      el.modelSummaryBar.innerHTML = '';
+      el.modelShareChart.innerHTML = '';
+      el.modelTableWrap.innerHTML = `
+        <div class="empty-state">
+          <p>📭 所选时间范围内（${escapeHtml(range.label)}）没有任何模型用量记录</p>
+          <p class="empty-hint">可切换更长的范围，或选择「全部历史」。</p>
+        </div>
+      `;
       return;
     }
 
-    const totals = data.totals || {};
-    const totalTok = totals.totalTokens || 1;
+    const isUnit = state.modelPricingMode === 'unit';
+    const basisModel = getActiveModel(); // 等效计价时统一使用当前选中的计价模型费率
 
-    let rowsHtml = '';
-    models.slice(0, 200).forEach((m, idx) => {
-      const pct = (m.totalTokens / totalTok) * 100;
-      const agents = Object.keys(m.agents || {});
-      const isUnknown = m.model === 'unknown';
-      rowsHtml += `
+    // 逐模型计价 + 汇总
+    let totalTokens = 0, totalCalls = 0, totalCostCny = 0, missingRate = 0;
+    rows.forEach(r => {
+      r.rate = isUnit ? findRateForModel(r.model) : basisModel;
+      if (r.rate) {
+        r.cost = calcCost(r.rate, r.inputTokens, r.cacheReadTokens, r.outputTokens);
+        r.costCny = toCnyCost(r.rate, r.cost);
+        totalCostCny += r.costCny;
+      } else {
+        r.cost = null;
+        r.costCny = null;
+        missingRate++;
+      }
+      totalTokens += r.totalTokens;
+      totalCalls += r.calls;
+    });
+
+    // 占比基数：Token 或 费用
+    const useCost = state.modelShareBasis === 'cost';
+    const basisOf = (r) => (useCost ? (r.costCny || 0) : r.totalTokens);
+    const basisTotal = useCost ? totalCostCny : totalTokens;
+    const pctOf = (r) => (basisTotal > 0 ? (basisOf(r) / basisTotal) * 100 : 0);
+
+    renderModelSummaryBar(range, rows.length, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost);
+    renderModelShareChart(rows, pctOf, basisOf, basisTotal, useCost, missingRate);
+    renderModelTable(rows, pctOf, isUnit);
+
+    // 按模型单价模式下，把「还有多少模型没费率」直接显示在入口按钮上，避免用户找不到补录位置
+    if (el.btnOpenRateManager) {
+      el.btnOpenRateManager.textContent = (isUnit && missingRate > 0)
+        ? `⚙️ 费率表 (${missingRate} 个待配置)`
+        : '⚙️ 费率表';
+    }
+  }
+
+  function renderModelSummaryBar(range, modelCount, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost) {
+    const pricingNote = isUnit
+      ? `按模型单价计价（费率表${missingRate ? `，其中 ${missingRate} 个模型未配置费率` : ''}）`
+      : `等效计价 · 统一按「${escapeHtml(basisModel.name)}」折算`;
+
+    el.modelSummaryBar.innerHTML = `
+      <div class="models-summary-item">
+        <span class="ms-label">Token 合计</span>
+        <span class="ms-value">${formatTokens(totalTokens)}</span>
+      </div>
+      <div class="models-summary-item">
+        <span class="ms-label">费用合计</span>
+        <span class="ms-value cny-color">¥${totalCostCny.toFixed(2)}</span>
+      </div>
+      <div class="models-summary-item">
+        <span class="ms-label">调用次数</span>
+        <span class="ms-value">${totalCalls.toLocaleString()}</span>
+      </div>
+      <div class="models-summary-item">
+        <span class="ms-label">模型数</span>
+        <span class="ms-value">${modelCount}</span>
+      </div>
+      <div class="models-summary-meta">
+        <span>📅 实际区间 ${escapeHtml(range.start)} ~ ${escapeHtml(range.end)}</span>
+        <span>${pricingNote}</span>
+        <span>占比按 ${useCost ? '费用' : 'Token'} 归一</span>
+      </div>
+    `;
+  }
+
+  // Top 模型占比堆叠条 + 图例（纯 CSS 实现，零图表库开销）
+  function renderModelShareChart(rows, pctOf, basisOf, basisTotal, useCost, missingRate) {
+    const ordered = [...rows].sort((a, b) => basisOf(b) - basisOf(a));
+    const head = ordered.slice(0, MODEL_SHARE_TOP_N);
+    const tail = ordered.slice(MODEL_SHARE_TOP_N);
+
+    const segs = head.map((r, i) => ({
+      label: r.model,
+      pct: pctOf(r),
+      color: r.model === 'unknown' ? MODEL_SHARE_UNKNOWN_COLOR : MODEL_SHARE_PALETTE[i % MODEL_SHARE_PALETTE.length]
+    }));
+    if (tail.length) {
+      const rest = tail.reduce((s, r) => s + basisOf(r), 0);
+      segs.push({
+        label: `其他 ${tail.length} 个模型`,
+        pct: basisTotal > 0 ? (rest / basisTotal) * 100 : 0,
+        color: MODEL_SHARE_REST_COLOR
+      });
+    }
+
+    const barHtml = segs.map(s =>
+      `<div class="share-stack-seg" style="width:${Math.max(0, s.pct).toFixed(3)}%;background:${s.color}"
+            title="${escapeHtml(s.label)} · ${s.pct.toFixed(1)}%"></div>`
+    ).join('');
+
+    const legendHtml = segs.map(s => `
+      <div class="share-legend-item" title="${escapeHtml(s.label)}">
+        <span class="share-legend-dot" style="background:${s.color}"></span>
+        <span class="share-legend-name">${escapeHtml(s.label)}</span>
+        <span class="share-legend-pct">${s.pct.toFixed(1)}%</span>
+      </div>
+    `).join('');
+
+    const costBasisWarning = (useCost && missingRate > 0)
+      ? `<div class="models-share-note">⚠️ ${missingRate} 个模型未配置费率、无成本数据，未参与费用占比归一。</div>`
+      : '';
+
+    el.modelShareChart.innerHTML = `
+      <div class="models-share-head">
+        <span class="models-share-title">模型占比分布（按${useCost ? '费用' : 'Token'}）</span>
+        <span class="models-share-sub">Top ${head.length}${tail.length ? ` + 其他 ${tail.length} 个` : ''}</span>
+      </div>
+      <div class="share-stack">${barHtml}</div>
+      <div class="share-legend">${legendHtml}</div>
+      ${costBasisWarning}
+    `;
+  }
+
+  function renderModelTable(rows, pctOf, isUnit) {
+    const q = state.modelFilter;
+    const visible = q ? rows.filter(r => String(r.model).toLowerCase().includes(q)) : rows;
+
+    if (!visible.length) {
+      el.modelTableWrap.innerHTML = `<div class="empty-state">🔍 未找到匹配「${escapeHtml(state.modelFilter)}」的模型</div>`;
+      return;
+    }
+
+    const body = visible.map((r, idx) => {
+      const pct = pctOf(r);
+      const isUnknown = r.model === 'unknown';
+      const agentIds = Object.keys(r.agents || {});
+      const agentHtml = agentIds.length
+        ? agentIds.map(aid => `<span class="badge badge-subtle" title="${escapeHtml((AGENT_COLORS[aid] || {}).name || aid)}">${escapeHtml(aid)}</span>`).join(' ')
+        : '<span class="cell-muted">—</span>';
+
+      const costHtml = r.rate
+        ? formatLedgerCost(r.rate, r.cost)
+        : '<span class="rate-missing" title="该模型未在费率表中配置单价，无法计价">费率未配置</span>';
+
+      const rateHtml = r.rate
+        ? `<span class="rate-triple" title="计价依据：${escapeHtml(r.rate.name)}">${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.inputRate)} / ${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.cacheRate)} / ${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.outputRate)}</span>`
+        : '<span class="cell-muted">—</span>';
+
+      return `
         <tr class="${isUnknown ? 'row-unknown-model' : ''}">
           <td class="col-rank">${idx + 1}</td>
           <td class="col-model">
-            <span class="model-name">${escapeHtml(m.model)}</span>
+            <span class="model-name">${escapeHtml(r.model)}</span>
             ${isUnknown ? '<span class="badge badge-orange">未识别</span>' : ''}
           </td>
-          <td class="col-tokens">${formatTokens(m.totalTokens)}</td>
+          <td class="col-tokens">
+            <div class="tok-main">${formatTokens(r.totalTokens)}</div>
+            <div class="tok-split">入 ${formatTokens(r.inputTokens)} · 缓 ${formatTokens(r.cacheReadTokens)} · 出 ${formatTokens(r.outputTokens)}</div>
+          </td>
           <td class="col-share">
             <div class="share-cell">
               <div class="share-bar"><div class="share-bar-fill" style="width:${Math.min(100, pct).toFixed(2)}%"></div></div>
               <span class="share-pct">${pct.toFixed(1)}%</span>
             </div>
           </td>
-          <td class="col-calls">${(m.calls || 0).toLocaleString()}</td>
-          <td class="col-agents">${agents.map(a => `<span class="badge badge-subtle">${escapeHtml(a)}</span>`).join(' ')}</td>
+          <td class="col-cost">${costHtml}</td>
+          <td class="col-rate">${rateHtml}</td>
+          <td class="col-calls">${(r.calls || 0).toLocaleString()}</td>
+          <td class="col-agents">${agentHtml}</td>
         </tr>
       `;
-    });
+    }).join('');
 
-    const unknownPct = ((totals.unknownTokens || 0) / totalTok) * 100;
-    const unknownNote = unknownPct > 0
-      ? `<div class="model-unknown-note">⚠️ 未能识别模型的数据占比 <strong>${unknownPct.toFixed(1)}%</strong>（已计入合计，未从统计中剔除）</div>`
-      : '';
+    // 表尾注记：只解释真正发生的情况，避免无谓文案
+    const notes = [];
+    if (rows.some(r => r.model === 'unknown')) {
+      notes.push('「未识别」包含多端同步而来的异机会话（同步分片按设计不携带模型明细）与本地无法解析出模型名的记录，已计入合计未剔除。');
+    }
+    if (isUnit && rows.some(r => !r.rate)) {
+      notes.push('部分模型在费率表中没有对应条目，其「计价」列显示为「费率未配置」且未计入费用合计；可点击上方「⚙️ 费率表」新增或导入。');
+    }
 
-    const backBtn = state.agent === 'all'
-      ? '<button class="btn btn-sm model-back-btn" id="btnBackToOverview" type="button">← 返回全景对比</button>'
-      : '';
-
-    el.ledgerContainer.innerHTML = `
-      <div class="model-summary-bar">
-        <div class="model-summary-item"><span class="ms-label">模型总数</span><span class="ms-value">${all.length}</span></div>
-        <div class="model-summary-item"><span class="ms-label">Token 合计</span><span class="ms-value">${formatTokens(totals.totalTokens || 0)}</span></div>
-        <div class="model-summary-item"><span class="ms-label">调用次数</span><span class="ms-value">${(totals.calls || 0).toLocaleString()}</span></div>
-        ${backBtn}
-        ${unknownNote}
-      </div>
-      <div class="session-table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="col-rank">序号</th>
-              <th class="col-model">模型名称</th>
-              <th class="col-tokens">Token 总量</th>
-              <th class="col-share">占比</th>
-              <th class="col-calls">调用次数</th>
-              <th class="col-agents">来源 Agent</th>
-            </tr>
-          </thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-      </div>
+    el.modelTableWrap.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th class="col-rank">序号</th>
+            <th class="col-model">模型名称</th>
+            <th class="col-tokens">消耗量 (Token)</th>
+            <th class="col-share">占比</th>
+            <th class="col-cost">计价</th>
+            <th class="col-rate">单价 (/1M 入·缓·出)</th>
+            <th class="col-calls">调用次数</th>
+            <th class="col-agents">来源 Agent</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+      ${notes.length ? `<div class="models-table-notes">${notes.map(n => `💡 ${n}`).join('<br/>')}</div>` : ''}
     `;
-    el.recordCounter.textContent = `共 ${all.length} 个模型${q ? ` (匹配 ${models.length})` : ''}`;
+  }
 
-    const back = document.getElementById('btnBackToOverview');
-    if (back) {
-      back.addEventListener('click', () => {
-        state.mode = 'daily';
-        loadData();
+  // 模型维度视图的控件绑定（一次性注册；数据侧仅在已加载后做重渲染）
+  function bindModelViewEvents() {
+    if (el.modelRangeSelect) {
+      el.modelRangeSelect.addEventListener('change', () => {
+        state.modelRange = el.modelRangeSelect.value;
+        if (el.modelCustomRange) {
+          el.modelCustomRange.style.display = state.modelRange === 'custom' ? 'flex' : 'none';
+        }
+        renderModelsView(); // 纯内存聚合，无需重新请求后端
+      });
+    }
+    if (el.modelStartDate) {
+      el.modelStartDate.addEventListener('change', () => {
+        state.modelStart = el.modelStartDate.value;
+        if (state.modelRange === 'custom') renderModelsView();
+      });
+    }
+    if (el.modelEndDate) {
+      el.modelEndDate.addEventListener('change', () => {
+        state.modelEnd = el.modelEndDate.value;
+        if (state.modelRange === 'custom') renderModelsView();
+      });
+    }
+    if (el.modelPricingSelect) {
+      el.modelPricingSelect.addEventListener('change', () => {
+        state.modelPricingMode = el.modelPricingSelect.value;
+        renderModelsView();
+      });
+    }
+    if (el.modelShareBasisSelect) {
+      el.modelShareBasisSelect.addEventListener('change', () => {
+        state.modelShareBasis = el.modelShareBasisSelect.value;
+        renderModelsView();
+      });
+    }
+    if (el.modelFilterInput) {
+      el.modelFilterInput.addEventListener('input', () => {
+        state.modelFilter = el.modelFilterInput.value.trim().toLowerCase();
+        renderModelsView();
+      });
+    }
+    // 「费率表」入口：复用既有的计费模型管理弹窗（内含智能导入 / 新增 / 编辑 / 删除）
+    if (el.btnOpenRateManager) {
+      el.btnOpenRateManager.addEventListener('click', () => {
+        if (state.modelPricingMode !== 'unit') {
+          showToast('提示：切换到「按模型单价」后，费率表才会参与计价');
+        }
+        openModelManager();
       });
     }
   }
 
   function filterAndRenderLedger() {
     if (!state.data) return;
-    // 模型维度视图走独立渲染路径（数据源为 /api/models，与 /api/data 同源同口径）
-    if (state.mode === 'models') {
-      renderModelRows();
-      return;
-    }
     const data = state.data;
     const q = state.searchQuery;
 

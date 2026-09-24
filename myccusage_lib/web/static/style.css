@@ -2275,13 +2275,215 @@ body.light-theme .navbar {
 
 /* ============================================================
    模型维度视图 (Models)
-   复用既有 CSS 变量与 .data-table 体系，仅补充该视图专属的列与占比条，
-   不改动任何既有选择器，确保原有 daily / session 视图样式零影响。
+   ------------------------------------------------------------
+   该视图是**独立布局**：不复用 Token 统计的 KPI 卡片与趋势/环形图，
+   只聚焦「选定时间范围内各实际模型的消耗量 / 占比 / 计价 / 调用次数」。
+   全部样式基于既有 CSS 变量与 .data-table / .badge / .btn 体系扩展，
+   不改动任何既有选择器，确保 daily / session 视图样式零影响。
    ============================================================ */
 
+/* ---------- 控制条 ---------- */
+.models-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.models-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.models-control-label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.models-select {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.models-select:focus {
+  border-color: var(--accent-indigo);
+}
+
+.models-date {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-family: "JetBrains Mono", monospace;
+  outline: none;
+}
+
+.models-date:focus {
+  border-color: var(--accent-indigo);
+}
+
+.models-range-sep {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.models-control-right {
+  margin-left: auto;
+}
+
+.models-search-box {
+  min-width: 190px;
+}
+
+/* ---------- 选定范围的汇总指标 ---------- */
+.models-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 26px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.models-summary-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.models-summary-item .ms-label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.models-summary-item .ms-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.models-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ---------- 占比分布卡 ---------- */
+.models-share-card {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.models-share-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.models-share-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.models-share-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.share-stack {
+  display: flex;
+  width: 100%;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background-color: var(--bg-tertiary);
+}
+
+.share-stack-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.share-stack-seg:hover {
+  filter: brightness(1.15);
+}
+
+.share-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 10px;
+}
+
+.share-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.share-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.share-legend-name {
+  font-family: "JetBrains Mono", monospace;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-legend-pct {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-muted);
+}
+
+.models-share-note {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--accent-amber);
+}
+
+/* ---------- 明细表专属列 ---------- */
 .col-model {
   text-align: left;
-  min-width: 230px;
+  min-width: 210px;
 }
 
 .model-name {
@@ -2292,7 +2494,7 @@ body.light-theme .navbar {
 }
 
 .col-share {
-  min-width: 200px;
+  min-width: 190px;
 }
 
 .share-cell {
@@ -2304,7 +2506,7 @@ body.light-theme .navbar {
 .share-bar {
   flex: 1;
   height: 6px;
-  min-width: 90px;
+  min-width: 80px;
   background-color: var(--bg-tertiary);
   border-radius: var(--radius-pill);
   overflow: hidden;
@@ -2329,12 +2531,12 @@ body.light-theme .navbar {
   text-align: right;
   font-family: "JetBrains Mono", monospace;
   font-weight: 600;
-  min-width: 96px;
+  min-width: 90px;
 }
 
 .col-agents {
   text-align: left;
-  min-width: 170px;
+  min-width: 150px;
   white-space: normal;
 }
 
@@ -2343,7 +2545,52 @@ body.light-theme .navbar {
   font-size: 0.7rem;
 }
 
-/* 未识别模型的整行弱化处理：保留可见度但不与真实模型争夺注意力 */
+.col-cost {
+  text-align: right;
+  min-width: 96px;
+}
+
+.col-rate {
+  text-align: right;
+  min-width: 150px;
+}
+
+.rate-triple {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+/* 费率表中没有对应条目时的显式标注（不虚构价格，也不静默留空） */
+.rate-missing {
+  font-size: 0.75rem;
+  color: var(--accent-amber);
+  border: 1px dashed var(--accent-amber);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.cell-muted {
+  color: var(--text-muted);
+}
+
+/* 消耗量单元格：主数值 + 输入/缓存/输出拆分小字 */
+.tok-main {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tok-split {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* 未识别模型：整行弱化但不隐藏，避免用户误以为数据丢失 */
 .row-unknown-model .model-name {
   color: var(--text-muted);
 }
@@ -2352,50 +2599,15 @@ body.light-theme .navbar {
   opacity: 0.88;
 }
 
-.model-summary-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 24px;
-  padding: 12px 16px;
-  margin-bottom: 12px;
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-}
-
-.model-summary-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.model-summary-item .ms-label {
-  font-size: 0.78rem;
+.models-table-notes {
+  padding: 10px 12px 2px;
+  font-size: 0.74rem;
+  line-height: 1.6;
   color: var(--text-muted);
 }
 
-.model-summary-item .ms-value {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.model-unknown-note {
-  font-size: 0.78rem;
-  color: var(--accent-amber);
-  margin-left: auto;
-}
-
-
-
-/* 模型视图：全景模式下的返回按钮（靠右对齐，与未识别提示共处一行） */
-.model-back-btn {
-  margin-left: auto;
-}
-
-.model-unknown-note {
-  margin-left: 0;
+.empty-hint {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }

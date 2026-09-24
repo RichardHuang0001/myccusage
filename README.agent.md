@@ -221,6 +221,9 @@ myccusage/
   - **作用**：按**实际调用的模型**维度聚合 Token 与调用次数（`agent_type=None` 表示全部 Agent）。
   - **返回值**：`models`（按 Token 降序，每项含 `model`/四类 Token/`calls`/`agents` 来源明细）、
     `byAgent`、`byDate`、`totals`（含 `unknownTokens` 用于暴露未识别模型的占比）。
+    `byAgent` 与 `byDate` 条目字段与 `models` 一致（同样带 `agents`）。
+  - **不变式**：遍历 `byDate` 或 `byAgent` 求和，其 `totalTokens` / `calls` 恒等于 `models` 的对应合计
+    （三者为同一次遍历的产物）—— 前端据此按任意时间范围对 `byDate` 求子集自行聚合，无需再次请求后端。
   - **实现要点**：**只读**适配器已经产出的 `daily_map.models`，不新增任何文件扫描；一次遍历产出三个视图。
   - **口径**：与 `get_daily_data` **完全一致** —— 同样融合异机会话并按 `(日期, sessionId)` 去重；
     由于同步分片按设计不携带模型明细，异机部分统一归入 `unknown`（既不虚构归属，又保证总量逐位一致）。
@@ -256,37 +259,54 @@ myccusage/
 
 ### 2.3 `myccusage_lib/web/server.py` (零依赖 HTTP 服务与心跳自退)
 
-- 基于 Python 标准库 `http.server.HTTPServer` 实现，无需 Flask/FastAPI/Uvicorn 等第三方重量依赖。
-- **RESTful 路由表**：
-  - `GET /api/data?agent=<agent>&mode=<daily|session>&sort=<time|tokens>`: 返回单 Agent 详细数据。
-  - `GET /api/all_agents`: 返回全 Agent 横向对比概览。
-  - `POST /api/heartbeat`: 客户端每 3 秒发送一次心跳保活。
-  - `POST /api/exit`: 浏览器页面关闭触发 `sendBeacon` 即刻结束进程。
-- **心跳守护设计 (`_auto_killer_loop`)**：
-  - 后台守护线程检测 `last_heartbeat_time`。若页面全部关闭超过 30 秒无任何心跳，自动触发 `os._exit(0)`，杜绝占用端口产生僵尸进程。
+- 基于 Python 标准库 `http.server.ThreadingHTTPServer` 实现，无需 Flask/FastAPI/Uvicorn 等第三方重量依赖。
+- **RESTful 路由表**（`/api/*` 之外的路径才走 SPA 静态回退；未匹配的 `/api/*` 一律返回 404 JSON）：
+  - `GET  /api/ping`: 存活探测（供 macOS 程序坞复用既有服务）。
+  - `GET  /api/today`: 今日各 Agent 极速摘要（**程序坞悬浮卡片的唯一数据源**，含异机融合）。
+  - `GET  /api/all`: 全 Agent 横向对比概览（Web 首屏全景视图）。
+  - `GET  /api/data?agent=<agent>&mode=<daily|session>&sort=<time|tokens>`: 单 Agent 详细数据。
+  - `GET  /api/models?agent=<agent|all>`: **按实际调用的模型**聚合的 Token / 调用次数 / 来源 Agent
+    （含 `byDate`，供前端按任意时间范围自行聚合，见 2.4）。
+  - `POST /api/refresh?agent=<agent|all>`: 强制失效缓存并重新解析。
+  - `GET  /api/leave` / `POST /api/heartbeat`: 页面侧保活与离开信号。
+  - `GET  /api/sync/status`、`POST /api/sync/trigger|config|unbind`: 多端 Git 同步。
+- **看门狗与自动回收 (`watchdog_loop`)**：
+  - **有过客户端连接** → 按 `HEARTBEAT_TIMEOUT`（6s）无心跳回收，实现"用完即走"。
+  - **从未有任何连接** → 按 `STARTUP_GRACE`（60s）回收，避免从终端误启动的服务成为永驻孤儿进程。
+  - `daemon` 模式（程序坞以固定端口拉起）**不注册看门狗**，且端口被占即失败退出、不做降级 ——
+    因为 `main.swift` 硬编码 8488 并据此探测复用，降级出来的进程必然无人连接。
 
 ---
 
 ### 2.4 `myccusage_lib/web/static/app.js` (响应式客户端与动态重算)
 
-- **核心状态容器 (`state`)**：
-  ```javascript
-  const state = {
-    agent: 'agy',
-    mode: 'daily',
-    sort: 'time',
-    timeSortOrder: 'desc',
-    pricingModel: 'deepseek-v4.1-flash',
-    data: null,
-    allAgentsData: null,
-    trendChartInstance: null,
-    donutChartInstance: null,
-    isDarkTheme: true
-  };
-  ```
-- **核心动态重算算法 (`recalculateAllCosts()`)**：
-  - 当用户在前端切换或编辑计价模型时，**无需重新向后端请求接口**。
-  - 前端基于当前内存中的 Raw Token 数，以微秒级重算每一条 Session、日小计、周小计、大计与图表数据集，体验丝滑。
+- **核心状态容器 (`state`)**：除 `agent` / `mode` / `sort` / `pricingModel` 等基础字段外，
+  模型维度视图另有一组专属状态（`modelsData` / `modelRange` / `modelPricingMode` /
+  `modelShareBasis` / `modelStart` / `modelEnd` / `modelFilter`）。
+- **四个视图模式 (`modeSelector`)**，tab 在**所有 Agent 选择下常显**（含全景对比）：
+  | mode | 数据源 | 说明 |
+  |---|---|---|
+  | `daily` | `/api/data` | 每日会话账本（含 KPI 卡片 / 趋势图 / 环形图 / 周-日折叠表）|
+  | `session` | `/api/data` | 项目会话全生命周期明细 |
+  | `models` | `/api/models` | **独立的模型维度视图**，见下 |
+  | `agent=all` | `/api/all` | 全景对比：各 Agent 卡片 + 竞赛折线图（与 daily/session 共用该布局）|
+  区块显隐统一由 `applyViewLayout(isModels)` 调度，避免 `style.display` 赋值散落各处。
+- **模型维度视图（models）**：刻意**不复用** Token 统计的 KPI 卡片与趋势/环形图 ——
+  它的口径是「选定范围内各实际模型的消耗量 / 占比 / 计价 / 调用次数」，与账本口径无关。
+  - 控制项：时间范围（当天 / 近 7 天 / 近 30 天 / 全部历史 / 自定义起止）、
+    计价方式（等效计价 / 按模型单价）、占比口径（Token / 费用）、费率表入口、模型名过滤。
+  - **时间范围过滤在前端完成**：`/api/models` 的 `byDate` 已按「日期 × 模型 × 来源 Agent」切好，
+    且后端保证遍历 `byDate` 求和恒等于 `models` 合计，故切范围为纯内存聚合、**零网络请求**。
+  - **计价方式**：
+    - `equivalent`（原始口径）—— 统一按当前选中的计价模型费率折算，与页面其它位置口径一致；
+    - `unit`（按模型单价）—— 每个模型按 `findRateForModel()` 从费率表匹配自身费率；
+      匹配顺序为「id 精确 → id 忽略大小写 → 归一化后匹配 id 或显示名（**仅唯一命中时采纳**）」。
+      归一化匹配是必需的：既有「智能导入」流程给新条目生成的是 `model_<时间戳>` 形式的合成 id，
+      永远不会等于真实模型名。检测到歧义（多条同键，如高峰期/低谷期）时判为未匹配而**不猜价格**；
+      未匹配的模型显式标注「费率未配置」并排除在费用合计之外。
+- **统一计价响应调度中心 (`updateAllPricingDisplays()`)**：
+  - 切换/编辑计价模型或费率后，**无需重新向后端请求**，前端基于内存中的 Raw Token 微秒级重算
+    当前激活视图的全部价格展示（模型视图亦在其中）。
 - **图表渲染生命周期 (`renderCharts()`)**：
   - 在重新绘制前必须调用 `destroy()` 销毁旧 Chart 实例，避免 Canvas 重影及内存泄漏。
 

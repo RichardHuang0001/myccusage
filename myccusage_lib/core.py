@@ -982,10 +982,14 @@ def get_model_breakdown(agent_type=None):
       {
         "models":  [ {model, inputTokens, cacheReadTokens, outputTokens,
                       totalTokens, calls, agents: {aid: {totalTokens, calls}}} ],  # 按 token 降序
-        "byAgent": { aid: [ ...同结构... ] },
-        "byDate":  { "YYYY-MM-DD": [ ...同结构... ] },
+        "byAgent": { aid: [ ...同字段，带 agents... ] },
+        "byDate":  { "YYYY-MM-DD": [ ...同字段，带 agents... ] },
         "totals":  { models, totalTokens, calls, unknownTokens, unknownCalls },
       }
+
+    不变式（可据此做一致性校验）：遍历 byDate 或 byAgent 的全部条目求和，
+    其 totalTokens / calls 恒等于 models 的对应合计 —— 三者为同一次遍历的产物。
+    因此前端可按任意时间范围对 byDate 求子集自行聚合，无需再次请求后端。
 
     口径说明（重要）：本函数与 get_daily_data 保持**完全相同的数据口径** ——
     除本机适配器数据外，同样融合多端同步带来的异机会话，并按 (日期, sessionId) 去重。
@@ -1019,19 +1023,23 @@ def get_model_breakdown(agent_type=None):
         e["calls"] += mv.get("calls", 0)
         return e
 
-    def _record(aid: str, d_str: str, mname: str, mv: dict) -> None:
-        """把单个模型的用量同时记入 全局 / 按 Agent / 按日期 三个视图。"""
-        g = _add(global_map, mname, mv)
-        # 模型 -> 来源 Agent 的明细（用于展示"这个模型被哪些 Agent 用过"）
-        # agents 子结构按需创建，避免给 byAgent / byDate 的条目也带上它
-        agents_of_model = g.setdefault("agents", {})
-        ag = agents_of_model.get(aid)
+    def _bump_agent(entry: dict, aid: str, mv: dict) -> None:
+        """在条目的 agents 子结构中累加某 Agent 的贡献（按需创建该子结构）。"""
+        agents = entry.setdefault("agents", {})
+        ag = agents.get(aid)
         if ag is None:
-            ag = agents_of_model[aid] = {"totalTokens": 0, "calls": 0}
+            ag = agents[aid] = {"totalTokens": 0, "calls": 0}
         ag["totalTokens"] += mv.get("totalTokens", 0)
         ag["calls"] += mv.get("calls", 0)
+
+    def _record(aid: str, d_str: str, mname: str, mv: dict) -> None:
+        """把单个模型的用量同时记入 全局 / 按 Agent / 按日期 三个视图。"""
+        # 全局视图带 agents 明细：展示"这个模型被哪些 Agent 用过"
+        _bump_agent(_add(global_map, mname, mv), aid, mv)
         _add(agent_maps.setdefault(aid, {}), mname, mv)
-        _add(date_maps.setdefault(d_str, {}), mname, mv)
+        # 日期视图同样带 agents 明细：前端据此按任意时间范围自行聚合，
+        # 从而做到"切换时间范围零网络请求"，且仍能显示来源 Agent
+        _bump_agent(_add(date_maps.setdefault(d_str, {}), mname, mv), aid, mv)
 
     for aid in targets:
         adapter = ADAPTERS.get(aid)
