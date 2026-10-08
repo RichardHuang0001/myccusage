@@ -487,16 +487,13 @@ struct FloatingPopoverView: View {
                         Spacer()
                     }
                 } else {
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(state.summary.agents) { agent in
-                                AgentRowView(agent: agent, totalDayTokens: state.summary.totalTokens)
-                            }
+                    VStack(spacing: 2) {
+                        ForEach(state.summary.agents) { agent in
+                            AgentRowView(agent: agent, totalDayTokens: state.summary.totalTokens)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
                     }
-                    .frame(maxHeight: 180)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
             }
             
