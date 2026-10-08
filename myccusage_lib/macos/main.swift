@@ -469,7 +469,7 @@ struct FloatingPopoverView: View {
                         .foregroundColor(.secondary)
                         .textCase(.uppercase)
                     Spacer()
-                    Text("用量 · 缓存率")
+                    Text("份额占比 · 缓存率")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
@@ -490,7 +490,7 @@ struct FloatingPopoverView: View {
                     ScrollView {
                         VStack(spacing: 2) {
                             ForEach(state.summary.agents) { agent in
-                                AgentRowView(agent: agent)
+                                AgentRowView(agent: agent, totalDayTokens: state.summary.totalTokens)
                             }
                         }
                         .padding(.horizontal, 8)
@@ -630,6 +630,24 @@ struct AnchoredPopoverContainerView: View {
 // MARK: - 单个 Agent 列表行
 struct AgentRowView: View {
     let agent: AgentUsage
+    var totalDayTokens: Int = 0
+    
+    private var sharePercentage: Double {
+        guard totalDayTokens > 0 else { return 0.0 }
+        return min(100.0, max(0.0, Double(agent.totalTokens) / Double(totalDayTokens) * 100.0))
+    }
+    
+    private var displayShare: String {
+        if sharePercentage >= 99.95 {
+            return "100%"
+        } else if sharePercentage >= 0.1 {
+            return String(format: "%.1f%%", sharePercentage)
+        } else if sharePercentage > 0 {
+            return "<0.1%"
+        } else {
+            return "0%"
+        }
+    }
     
     var body: some View {
         HStack(spacing: 8) {
@@ -643,13 +661,25 @@ struct AgentRowView: View {
                     .foregroundColor(AgentTheme.color(for: agent.id))
             }
             
-            // 名称与会话数
+            // 名称与份额进度条
             VStack(alignment: .leading, spacing: 2) {
-                Text(agent.name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(agent.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    
+                    if totalDayTokens > 0 {
+                        Text(displayShare)
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.06))
+                            .cornerRadius(4)
+                    }
+                }
                 
-                // 微型进度条展示命中率
+                // 微型进度条展示当日份额占比（长短直观映射份额，保底 3pt 避免极小值隐形）
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
@@ -657,7 +687,12 @@ struct AgentRowView: View {
                             .frame(height: 3)
                         Capsule()
                             .fill(AgentTheme.color(for: agent.id))
-                            .frame(width: max(0, min(geo.size.width * CGFloat(agent.hitRate / 100.0), geo.size.width)), height: 3)
+                            .frame(
+                                width: agent.totalTokens > 0
+                                    ? max(3, min(geo.size.width * CGFloat(sharePercentage / 100.0), geo.size.width))
+                                    : 0,
+                                height: 3
+                            )
                     }
                 }
                 .frame(height: 3)
