@@ -72,13 +72,24 @@ class HermesAdapter(BaseAgentAdapter):
                 uri = f"file:{db}?mode=ro"
                 conn = sqlite3.connect(uri, uri=True, timeout=3.0)
                 c = conn.cursor()
-                for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
-                    sid, st, et, title = row
-                    last_t = et or st
-                    if last_t:
-                        times[sid] = ts_to_iso(last_t)
-                    if title and title.strip():
-                        titles[sid] = title.strip()
+                cols = {r[1] for r in c.execute("PRAGMA table_info(sessions)")}
+                has_lat = "last_activity_at" in cols
+                if has_lat:
+                    for row in c.execute("SELECT id, started_at, ended_at, last_activity_at, title FROM sessions"):
+                        sid, st, et, lat, title = row
+                        last_t = et or lat or st
+                        if last_t:
+                            times[sid] = ts_to_iso(last_t)
+                        if title and title.strip():
+                            titles[sid] = title.strip()
+                else:
+                    for row in c.execute("SELECT id, started_at, ended_at, title FROM sessions"):
+                        sid, st, et, title = row
+                        last_t = et or st
+                        if last_t:
+                            times[sid] = ts_to_iso(last_t)
+                        if title and title.strip():
+                            titles[sid] = title.strip()
                 conn.close()
             except Exception:
                 pass
@@ -89,6 +100,7 @@ class HermesAdapter(BaseAgentAdapter):
         查询 Hermes 数据库提取统计数据，按时间正序返回每日切片和汇总。
         - 支持 today_only: 仅扫描今日活跃会话 (SQL 过滤提速)
         - 模型维度取 sessions.model（会话级）。
+        - 优先支持 last_activity_at 字段，确保常驻长会话在跨日活跃时不会被遗漏。
 
         关于 session_model_usage 表的取舍（实测结论）：
         该表粒度更细（可表达"一个会话内用了多个模型"）且自带 api_call_count，
@@ -114,6 +126,9 @@ class HermesAdapter(BaseAgentAdapter):
                 conn = sqlite3.connect(uri, uri=True, timeout=3.0)
                 c = conn.cursor()
 
+                cols = {r[1] for r in c.execute("PRAGMA table_info(sessions)")}
+                has_lat = "last_activity_at" in cols
+
                 where_clauses = [
                     "model IS NOT NULL",
                     "TRIM(model) != ''",
@@ -122,31 +137,59 @@ class HermesAdapter(BaseAgentAdapter):
                 params = []
                 if today_only:
                     min_ts = get_today_midnight_ts()
-                    where_clauses.append("(started_at >= ? OR ended_at >= ?)")
-                    params.extend([min_ts, min_ts])
+                    if has_lat:
+                        where_clauses.append("(started_at >= ? OR (ended_at IS NOT NULL AND ended_at >= ?) OR (last_activity_at IS NOT NULL AND last_activity_at >= ?))")
+                        params.extend([min_ts, min_ts, min_ts])
+                    else:
+                        where_clauses.append("(started_at >= ? OR (ended_at IS NOT NULL AND ended_at >= ?))")
+                        params.extend([min_ts, min_ts])
 
                 where_sql = " AND ".join(where_clauses)
-                sql = f"""
-                    SELECT
-                        id,
-                        started_at,
-                        ended_at,
-                        input_tokens,
-                        output_tokens,
-                        cache_read_tokens,
-                        model
-                    FROM sessions
-                    WHERE {where_sql}
-                    ORDER BY started_at ASC
-                """
-                for row in c.execute(sql, params):
-                    sid, st, et, inp, out, cr, model = row
-                    act_time = et or st or 0
-                    date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
-                    iso_str = ts_to_iso(act_time) if act_time else ""
-                    tot = inp + cr + out
-                    records.append((sid, date_str, iso_str, inp, cr, out, tot,
-                                    normalize_model_name(model)))
+                if has_lat:
+                    sql = f"""
+                        SELECT
+                            id,
+                            started_at,
+                            ended_at,
+                            last_activity_at,
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens,
+                            model
+                        FROM sessions
+                        WHERE {where_sql}
+                        ORDER BY started_at ASC
+                    """
+                    for row in c.execute(sql, params):
+                        sid, st, et, lat, inp, out, cr, model = row
+                        act_time = et or lat or st or 0
+                        date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
+                        iso_str = ts_to_iso(act_time) if act_time else ""
+                        tot = inp + cr + out
+                        records.append((sid, date_str, iso_str, inp, cr, out, tot,
+                                        normalize_model_name(model)))
+                else:
+                    sql = f"""
+                        SELECT
+                            id,
+                            started_at,
+                            ended_at,
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens,
+                            model
+                        FROM sessions
+                        WHERE {where_sql}
+                        ORDER BY started_at ASC
+                    """
+                    for row in c.execute(sql, params):
+                        sid, st, et, inp, out, cr, model = row
+                        act_time = et or st or 0
+                        date_str = ts_to_date_str(act_time) if act_time else "1970-01-01"
+                        iso_str = ts_to_iso(act_time) if act_time else ""
+                        tot = inp + cr + out
+                        records.append((sid, date_str, iso_str, inp, cr, out, tot,
+                                        normalize_model_name(model)))
                 conn.close()
             except Exception:
                 pass
