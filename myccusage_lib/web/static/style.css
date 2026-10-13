@@ -1209,6 +1209,7 @@ body.light-theme .navbar {
 .col-output { text-align: right; font-family: "JetBrains Mono", monospace; color: var(--color-output); }
 .col-cache { text-align: right; font-family: "JetBrains Mono", monospace; color: var(--color-cache); }
 .col-hitrate { text-align: right; font-family: "JetBrains Mono", monospace; color: var(--color-cache); font-weight: 500; width: 75px; }
+.col-credit { text-align: right; font-family: "JetBrains Mono", monospace; color: var(--accent-pink, #f43f5e); font-weight: 600; min-width: 90px; }
 .col-cost { text-align: right; font-family: "JetBrains Mono", monospace; color: var(--accent-green); font-weight: 600; min-width: 100px; }
 
 .cost-cny-main {

@@ -3276,9 +3276,13 @@
     }
 
     const model = getActiveModel();
+    const isWorkbuddy = (state.agent === 'workbuddy') || (state.data && state.data.agent === 'workbuddy') || (state.data && state.data.summary && state.data.summary.credit > 0);
     let rowsHtml = '';
     filtered.forEach((r, idx) => {
       const rCost = calcCost(model, r.inputTokens, r.cacheTokens, r.outputTokens);
+      const creditHtml = isWorkbuddy
+        ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
+        : '';
       rowsHtml += `
         <tr>
           <td class="col-rank">${idx + 1}</td>
@@ -3288,6 +3292,7 @@
           <td class="col-output">${formatTokens(r.outputTokens)}</td>
           <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
           <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
+          ${creditHtml}
           <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
           <td class="col-title">
             <div class="title-cell">
@@ -3298,6 +3303,8 @@
         </tr>
       `;
     });
+
+    const creditHeader = isWorkbuddy ? `<th class="col-credit">消耗积分</th>` : '';
 
     el.ledgerContainer.innerHTML = `
       <div class="session-table-wrap">
@@ -3311,6 +3318,7 @@
               <th class="col-output">Output</th>
               <th class="col-cache">Cache</th>
               <th class="col-hitrate">Hitrate</th>
+              ${creditHeader}
               <th class="col-cost">等效费用 (CNY ¥)</th>
               <th class="col-title">会话标题</th>
             </tr>
@@ -3333,6 +3341,7 @@
     let totalMatched = 0;
     let weeksHtml = '';
     const model = getActiveModel();
+    const isWorkbuddy = (state.agent === 'workbuddy') || (state.data && state.data.agent === 'workbuddy') || (state.data && state.data.summary && state.data.summary.credit > 0);
     const weeksToRender = state.timeSortOrder === 'desc' ? [...weeks].reverse() : [...weeks];
 
     weeksToRender.forEach(w => {
@@ -3359,6 +3368,9 @@
         let tableRows = '';
         recordsToRender.forEach(r => {
           const rCost = calcCost(model, r.inputTokens, r.cacheTokens, r.outputTokens);
+          const creditHtml = isWorkbuddy
+            ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
+            : '';
           tableRows += `
             <tr>
               <td class="col-rank">${r.index}</td>
@@ -3368,6 +3380,7 @@
               <td class="col-output">${formatTokens(r.outputTokens)}</td>
               <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
               <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
+              ${creditHtml}
               <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
               <td class="col-title">
                 <div class="title-cell">
@@ -3381,6 +3394,11 @@
 
         const dayShort = d.date.length >= 10 ? d.date.slice(5) : d.date;
         const dCost = calcCost(model, d.inputTokens, d.cacheTokens, d.outputTokens);
+        const dayCreditStat = (isWorkbuddy && d.credit !== undefined)
+          ? `<span>积分: <strong style="color:var(--accent-pink,#f43f5e);">${d.credit.toFixed(2)}积</strong></span>`
+          : '';
+        const tableCreditHeader = isWorkbuddy ? `<th class="col-credit">消耗积分</th>` : '';
+
         daysHtml += `
           <div class="day-block">
             <div class="day-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -3391,6 +3409,7 @@
               </div>
               <div class="day-stats">
                 <span>总: <strong style="color:var(--accent-blue);">${formatTokens(d.totalTokens)}</strong></span>
+                ${dayCreditStat}
                 <span>费用: <strong style="color:var(--accent-green);">${formatInlineCost(model, dCost)}</strong></span>
               </div>
             </div>
@@ -3405,6 +3424,7 @@
                     <th class="col-output">Output</th>
                     <th class="col-cache">Cache</th>
                     <th class="col-hitrate">Hitrate</th>
+                    ${tableCreditHeader}
                     <th class="col-cost">等效费用 (CNY ¥)</th>
                     <th class="col-title">会话标题</th>
                   </tr>
@@ -3418,6 +3438,9 @@
 
       if (weekHasMatch) {
         const wCost = calcCost(model, w.inputTokens, w.cacheTokens, w.outputTokens);
+        const weekCreditStat = (isWorkbuddy && w.credit !== undefined)
+          ? `<span>积分: <strong style="color:var(--accent-pink,#f43f5e);">${w.credit.toFixed(2)}积</strong></span>`
+          : '';
         weeksHtml += `
           <div class="week-card">
             <div class="week-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -3428,6 +3451,7 @@
               </div>
               <div class="week-subtotal-stats">
                 <span>Token: <strong class="stat-token-badge">${formatTokens(w.totalTokens)}</strong></span>
+                ${weekCreditStat}
                 <span>费用: <strong class="stat-cost-badge">${formatInlineCost(model, wCost)}</strong></span>
               </div>
             </div>
