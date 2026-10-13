@@ -2012,7 +2012,13 @@
     el.subTotalTokens.textContent = `Input: ${formatTokens(sum.inputTokens)} | Cache: ${formatTokens(sum.cacheTokens)} | Output: ${formatTokens(sum.outputTokens)}`;
 
     el.valTotalCost.textContent = formatKpiMainCost(model, currentCost);
-    el.valTotalCostUsd.textContent = formatKpiSubCost(model, currentCost);
+    if ((data.agent === 'workbuddy' || (sum.credit && sum.credit > 0)) && sum.credit > 0) {
+      const cr = sum.credit;
+      const ratio = currentCost > 0 ? (currentCost / cr).toFixed(4) : '0';
+      el.valTotalCostUsd.innerHTML = `<span style="color:var(--accent-pink,#f43f5e);font-weight:600;">${cr.toFixed(2)} 官方积分</span> · 1积≈¥${ratio}`;
+    } else {
+      el.valTotalCostUsd.textContent = formatKpiSubCost(model, currentCost);
+    }
 
     const costBadge = document.querySelector('.highlight-card .kpi-badge');
     if (costBadge) costBadge.textContent = model.name;
@@ -2747,6 +2753,10 @@
       const aCost = (a.inputTokens !== undefined || a.cacheTokens !== undefined || a.outputTokens !== undefined)
         ? calcCost(model, a.inputTokens, a.cacheTokens, a.outputTokens)
         : (a.costCny || 0);
+      let costDisplay = formatInlineCost(model, aCost);
+      if (a.id === 'workbuddy' && a.credit > 0) {
+        costDisplay += ` · <span style="color:var(--accent-pink,#f43f5e);">${a.credit.toFixed(1)}积</span>`;
+      }
       html += `
         <div class="agent-stat-card" data-agent="${a.id}">
           <div class="agent-stat-name">
@@ -2757,7 +2767,7 @@
           </div>
           <div class="agent-stat-values">
             <span class="agent-token-num">${formatTokens(a.totalTokens)}</span>
-            <span class="agent-cost-num">${formatInlineCost(model, aCost)}</span>
+            <span class="agent-cost-num">${costDisplay}</span>
           </div>
           <div style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);">
             Prompt 缓存命中率: <strong style="color: var(--color-cache);">${a.cacheHitRate}%</strong>

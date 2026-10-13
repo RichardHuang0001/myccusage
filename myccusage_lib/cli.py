@@ -145,6 +145,28 @@ def render_daily_table(data):
     display_name = data["displayName"]
     sort_by_tokens = data["sortByTokens"]
     sum_info = data["summary"]
+    is_workbuddy = (data.get("agent") == "workbuddy") or (sum_info.get("credit", 0.0) > 0)
+
+    # 预设各个数据列的固定宽度
+    w_rank = 5
+    w_time = 13
+    w_total = 8
+    w_input = 8
+    w_output = 8
+    w_cache = 8
+    w_hit = 7
+    w_credit = 10 if is_workbuddy else 0
+    w_cost = 10
+    
+    # 计算非标题列的总宽度（包含列之间的分隔符宽度等预估常数）
+    extra_sep = 3 if is_workbuddy else 0
+    fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_credit + w_cost + 24 + extra_sep
+    
+    # 将剩余空间全部分配给会话标题列，并保证最小宽度为 20
+    w_title = max(20, term_width - fixed_width)
+    total_table_width = min(term_width, fixed_width + w_title)
+
+    credit_hdr = (pad_str("官方积分", w_credit, "right") + " │ ") if is_workbuddy else ""
 
     # 分支一：按 Token 消耗量排序的展示逻辑（不分层级，平铺展示）
     if sort_by_tokens:
@@ -152,6 +174,12 @@ def render_daily_table(data):
         print("=" * total_table_width)
         print(f"  {display_name} 单日会话消耗排行 (共 {len(flat_records)} 条日度会话记录 - 按当日消耗排序)")
         print("  * 模式：[-d / --daily] 每日会话账本（不混淆前日用量，仅算当日实际消耗）")
+        if is_workbuddy:
+            total_credit = sum_info.get("credit", 0.0)
+            total_cost = sum_info.get("costCny", 0.0)
+            ratio_desc = f"全周期平均 1 积分 ≈ ¥{total_cost / total_credit:.4f} 等效价格 (¥1.00 ≈ {total_credit / total_cost:.2f} 积分)" if total_credit > 0 and total_cost > 0 else "积分已独立核算"
+            print("  * 积分：WorkBuddy 官方算力扣费 (来自 rawUsage.credit，多智能体 Subagent 全量计入)")
+            print(f"  * 换算：{ratio_desc}")
         print("=" * total_table_width)
         
         # 拼接表头，严格使用之前分配的各列宽度进行居中或对齐
@@ -163,6 +191,7 @@ def render_daily_table(data):
             pad_str("Output", w_output, "right") + " │ " +
             pad_str("Cache", w_cache, "right") + " │ " +
             pad_str("Hitrate", w_hit, "right") + " │ " +
+            credit_hdr +
             pad_str("等效价格", w_cost, "right") + " │ " +
             pad_str("会话标题", w_title, "left")
         )
@@ -171,8 +200,8 @@ def render_daily_table(data):
 
         # 遍历扁平化的记录进行单行渲染
         for r in flat_records:
-            # 根据动态分配的标题列宽进行智能截断
             t_str = truncate_title(r["title"], w_title)
+            credit_col = (pad_str(f"{r.get('creditRaw', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
             print(
                 pad_str(str(r["index"]), w_rank, "center") + " │ " +
                 pad_str(r["time"], w_time, "center") + " │ " +
@@ -181,12 +210,17 @@ def render_daily_table(data):
                 pad_str(format_tokens(r["outputTokens"]), w_output, "right") + " │ " +
                 pad_str(format_tokens(r["cacheTokens"]), w_cache, "right") + " │ " +
                 pad_str(format_hitrate(r["cacheTokens"], r["inputTokens"]), w_hit, "right") + " │ " +
+                credit_col +
                 pad_str(f"¥{r['costCnyRaw']:.2f}", w_cost, "right") + " │ " +
                 pad_str(t_str, w_title, "left")
             )
         print("─" * total_table_width)
         
         # 打印全周期合计行
+        sum_credit_col = (pad_str(f"{sum_info.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
+        summary_label = f"共 {len(flat_records)} 条日度会话记录 (~${sum_info['costUsd']:.2f} USD)"
+        if is_workbuddy and sum_info.get("credit", 0.0) > 0 and sum_info.get("costCny", 0.0) > 0:
+            summary_label = f"共 {len(flat_records)} 条日度会话记录 (1 积分 ≈ ¥{sum_info['costCny'] / sum_info['credit']:.3f}, ~${sum_info['costUsd']:.2f} USD)"
         print(
             pad_str("汇总", w_rank, "center") + " │ " +
             pad_str("--", w_time, "center") + " │ " +
@@ -195,8 +229,9 @@ def render_daily_table(data):
             pad_str(format_tokens(sum_info["outputTokens"]), w_output, "right") + " │ " +
             pad_str(format_tokens(sum_info["cacheTokens"]), w_cache, "right") + " │ " +
             pad_str(format_hitrate(sum_info["cacheTokens"], sum_info["inputTokens"]), w_hit, "right") + " │ " +
+            sum_credit_col +
             pad_str(f"¥{sum_info['costCny']:.2f}", w_cost, "right") + " │ " +
-            pad_str(f"共 {len(flat_records)} 条日度会话记录 (~${sum_info['costUsd']:.2f} USD)", w_title, "left")
+            pad_str(summary_label, w_title, "left")
         )
         print("=" * total_table_width)
         return
@@ -205,7 +240,15 @@ def render_daily_table(data):
     print("=" * total_table_width)
     print(f"  {display_name} 每日会话账本 (共 {data['activeDaysCount']} 个活动日, {data['totalRecordsCount']} 笔日度会话)")
     print("  * 模式：[-d / --daily 默认] 不混淆前日用量，精准分列“此日、此 Session”的实际发生额")
-    print("  * 计价：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
+    if is_workbuddy:
+        total_credit = sum_info.get("credit", 0.0)
+        total_cost = sum_info.get("costCny", 0.0)
+        ratio_desc = f"全周期平均 1 积分 ≈ ¥{total_cost / total_credit:.4f} 等效基准 (¥1.00 ≈ {total_credit / total_cost:.2f} 积分)" if total_credit > 0 and total_cost > 0 else "积分已独立核算"
+        print("  * 积分：WorkBuddy 官方算力扣费 (来自 rawUsage.credit，多智能体 Subagent 全量计入)")
+        print("  * 计价：DeepSeek-V4.1-Flash 高峰期等效基准 (供比对官方积分与理论 API 成本换算)")
+        print(f"  * 换算：{ratio_desc}")
+    else:
+        print("  * 计价：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
     print("=" * total_table_width)
 
     # 渲染主表头
@@ -217,6 +260,7 @@ def render_daily_table(data):
         pad_str("Output", w_output, "right") + " │ " +
         pad_str("Cache", w_cache, "right") + " │ " +
         pad_str("Hitrate", w_hit, "right") + " │ " +
+        credit_hdr +
         pad_str("等效价格", w_cost, "right") + " │ " +
         pad_str("会话标题", w_title, "left")
     )
@@ -229,6 +273,7 @@ def render_daily_table(data):
             # 渲染第一级：最细粒度的单笔会话记录
             for r in day["records"]:
                 t_str = truncate_title(r["title"], w_title)
+                credit_col = (pad_str(f"{r.get('creditRaw', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
                 row = (
                     pad_str(str(r["index"]), w_rank, "center") + " │ " +
                     pad_str(r["time"], w_time, "center") + " │ " +
@@ -237,6 +282,7 @@ def render_daily_table(data):
                     pad_str(format_tokens(r["outputTokens"]), w_output, "right") + " │ " +
                     pad_str(format_tokens(r["cacheTokens"]), w_cache, "right") + " │ " +
                     pad_str(format_hitrate(r["cacheTokens"], r["inputTokens"]), w_hit, "right") + " │ " +
+                    credit_col +
                     pad_str(f"¥{r['costCnyRaw']:.2f}", w_cost, "right") + " │ " +
                     pad_str(t_str, w_title, "left")
                 )
@@ -245,6 +291,7 @@ def render_daily_table(data):
             # 渲染第二级：日小计（统计当日内所有会话的消耗汇总）
             day_short = day["date"][5:] if len(day["date"]) >= 10 else day["date"]
             day_time_label = f"{day_short}({day['weekday']}) 小计"
+            day_credit_col = (pad_str(f"{day.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
             day_subtotal_row = (
                 pad_str("日计", w_rank, "center") + " │ " +
                 pad_str(day_time_label, w_time, "center") + " │ " +
@@ -253,6 +300,7 @@ def render_daily_table(data):
                 pad_str(format_tokens(day["outputTokens"]), w_output, "right") + " │ " +
                 pad_str(format_tokens(day["cacheTokens"]), w_cache, "right") + " │ " +
                 pad_str(format_hitrate(day["cacheTokens"], day["inputTokens"]), w_hit, "right") + " │ " +
+                day_credit_col +
                 pad_str(f"¥{day['costCny']:.2f}", w_cost, "right") + " │ " +
                 pad_str(f"当日净消耗 ({day['count']} 笔会话)", w_title, "left")
             )
@@ -261,6 +309,7 @@ def render_daily_table(data):
             print("·" * total_table_width)
 
         # 渲染第三级：周小计（统计当周内所有活动日的消耗汇总）
+        week_credit_col = (pad_str(f"{week.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
         week_subtotal_row = (
             pad_str("周计", w_rank, "center") + " │ " +
             pad_str(f"{week['weekKey']} 小计", w_time, "center") + " │ " +
@@ -269,6 +318,7 @@ def render_daily_table(data):
             pad_str(format_tokens(week["outputTokens"]), w_output, "right") + " │ " +
             pad_str(format_tokens(week["cacheTokens"]), w_cache, "right") + " │ " +
             pad_str(format_hitrate(week["cacheTokens"], week["inputTokens"]), w_hit, "right") + " │ " +
+            week_credit_col +
             pad_str(f"¥{week['costCny']:.2f}", w_cost, "right") + " │ " +
             pad_str(f"本周净消耗 ({week['count']} 笔会话)", w_title, "left")
         )
@@ -277,6 +327,12 @@ def render_daily_table(data):
         print("─" * total_table_width)
 
     # 渲染第四级：全周期合计（对所有历史数据的全局统计汇总）
+    sum_credit_col = (pad_str(f"{sum_info.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
+    summary_label = f"全周期净消耗 (~${sum_info['costUsd']:.2f} USD)"
+    if is_workbuddy and sum_info.get("credit", 0.0) > 0 and sum_info.get("costCny", 0.0) > 0:
+        cr = sum_info['credit']
+        cy = sum_info['costCny']
+        summary_label = f"全周期净消耗 (1 积分 ≈ ¥{cy / cr:.3f} 等效基准, ~${sum_info['costUsd']:.2f} USD)"
     grand_total_row = (
         pad_str("汇总", w_rank, "center") + " │ " +
         pad_str("全周期合计", w_time, "center") + " │ " +
@@ -285,8 +341,9 @@ def render_daily_table(data):
         pad_str(format_tokens(sum_info["outputTokens"]), w_output, "right") + " │ " +
         pad_str(format_tokens(sum_info["cacheTokens"]), w_cache, "right") + " │ " +
         pad_str(format_hitrate(sum_info["cacheTokens"], sum_info["inputTokens"]), w_hit, "right") + " │ " +
+        sum_credit_col +
         pad_str(f"¥{sum_info['costCny']:.2f}", w_cost, "right") + " │ " +
-        pad_str(f"全周期净消耗 (~${sum_info['costUsd']:.2f} USD)", w_title, "left")
+        pad_str(summary_label, w_title, "left")
     )
     print(grand_total_row)
     print("=" * total_table_width)
@@ -295,6 +352,8 @@ def render_session_table(data):
     """渲染项目总览模式的终端表格"""
     # 动态获取终端宽度，实现响应式排版
     term_width = shutil.get_terminal_size((118, 24)).columns
+    sum_info = data["summary"]
+    is_workbuddy = (data.get("agent") == "workbuddy") or (data.get("agentType") == "workbuddy") or (sum_info.get("credit", 0.0) > 0)
     
     # 预设固定的字段宽度
     w_rank = 5
@@ -304,23 +363,32 @@ def render_session_table(data):
     w_output = 8
     w_cache = 8
     w_hit = 7
+    w_credit = 10 if is_workbuddy else 0
     w_cost = 11
     
     # 计算并分配标题列所需的剩余宽度
-    fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_cost + 24
-    w_title = max(24, term_width - fixed_width)
+    extra_sep = 3 if is_workbuddy else 0
+    fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_credit + w_cost + 24 + extra_sep
+    w_title = max(20, term_width - fixed_width)
     total_table_width = min(term_width, fixed_width + w_title)
 
     display_name = data["displayName"]
     sort_by_tokens = data["sortByTokens"]
     sum_info = data["summary"]
     sessions = data["flatRecords"]
+    credit_hdr = (pad_str("官方积分", w_credit, "right") + " │ ") if is_workbuddy else ""
 
     # 排行榜分支：按 Token 全局排序平铺展示
     if sort_by_tokens:
         print("=" * total_table_width)
         print(f"  {display_name} 项目/会话总用量排行 (共 {len(sessions)} 个 Session - 按全生命周期 Token 消耗降序)")
         print("  * 模式：[-s / --session] 专注每个任务/Project 的全生命周期总耗费")
+        if is_workbuddy:
+            total_credit = sum_info.get("credit", 0.0)
+            total_cost = sum_info.get("costCny", 0.0)
+            ratio_desc = f"全周期平均 1 积分 ≈ ¥{total_cost / total_credit:.4f} 等效价格 (¥1.00 ≈ {total_credit / total_cost:.2f} 积分)" if total_credit > 0 and total_cost > 0 else "积分已独立核算"
+            print("  * 积分：WorkBuddy 官方算力扣费 (来自 rawUsage.credit，多智能体 Subagent 全量计入)")
+            print(f"  * 换算：{ratio_desc}")
         print("=" * total_table_width)
         header = (
             pad_str("序号", w_rank, "center") + " │ " +
@@ -330,6 +398,7 @@ def render_session_table(data):
             pad_str("Output", w_output, "right") + " │ " +
             pad_str("Cache", w_cache, "right") + " │ " +
             pad_str("Hitrate", w_hit, "right") + " │ " +
+            credit_hdr +
             pad_str("等效价格", w_cost, "right") + " │ " +
             pad_str("会话标题", w_title, "left")
         )
@@ -339,6 +408,7 @@ def render_session_table(data):
         # 遍历汇总后的会话进行展示
         for s in sessions:
             t_str = truncate_title(s["title"], w_title)
+            credit_col = (pad_str(f"{s.get('creditRaw', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
             print(
                 pad_str(str(s["index"]), w_rank, "center") + " │ " +
                 pad_str(s["time"], w_time, "center") + " │ " +
@@ -347,12 +417,17 @@ def render_session_table(data):
                 pad_str(format_tokens(s["outputTokens"]), w_output, "right") + " │ " +
                 pad_str(format_tokens(s["cacheTokens"]), w_cache, "right") + " │ " +
                 pad_str(format_hitrate(s["cacheTokens"], s["inputTokens"]), w_hit, "right") + " │ " +
+                credit_col +
                 pad_str(f"¥{s['costCnyRaw']:.2f}", w_cost, "right") + " │ " +
                 pad_str(t_str, w_title, "left")
             )
         print("─" * total_table_width)
         
         # 打印全周期合计行
+        sum_credit_col = (pad_str(f"{sum_info.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
+        summary_label = f"共 {len(sessions)} 个项目会话 (~${sum_info['costUsd']:.2f} USD)"
+        if is_workbuddy and sum_info.get("credit", 0.0) > 0 and sum_info.get("costCny", 0.0) > 0:
+            summary_label = f"共 {len(sessions)} 个项目会话 (1 积分 ≈ ¥{sum_info['costCny'] / sum_info['credit']:.3f}, ~${sum_info['costUsd']:.2f} USD)"
         print(
             pad_str("汇总", w_rank, "center") + " │ " +
             pad_str("--", w_time, "center") + " │ " +
@@ -361,8 +436,9 @@ def render_session_table(data):
             pad_str(format_tokens(sum_info["outputTokens"]), w_output, "right") + " │ " +
             pad_str(format_tokens(sum_info["cacheTokens"]), w_cache, "right") + " │ " +
             pad_str(format_hitrate(sum_info["cacheTokens"], sum_info["inputTokens"]), w_hit, "right") + " │ " +
+            sum_credit_col +
             pad_str(f"¥{sum_info['costCny']:.2f}", w_cost, "right") + " │ " +
-            pad_str(f"共 {len(sessions)} 个项目会话 (~${sum_info['costUsd']:.2f} USD)", w_title, "left")
+            pad_str(summary_label, w_title, "left")
         )
         print("=" * total_table_width)
         return
@@ -371,7 +447,15 @@ def render_session_table(data):
     print("=" * total_table_width)
     print(f"  {display_name} 项目/会话总览 (共 {len(sessions)} 个 Session - 全生命周期累计消耗)")
     print("  * 模式：[-s / --session] 专注每个任务/Project 的全生命周期总耗费（按最新访问时间排序）")
-    print("  * 计价：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
+    if is_workbuddy:
+        total_credit = sum_info.get("credit", 0.0)
+        total_cost = sum_info.get("costCny", 0.0)
+        ratio_desc = f"全周期平均 1 积分 ≈ ¥{total_cost / total_credit:.4f} 等效基准 (¥1.00 ≈ {total_credit / total_cost:.2f} 积分)" if total_credit > 0 and total_cost > 0 else "积分已独立核算"
+        print("  * 积分：WorkBuddy 官方算力扣费 (来自 rawUsage.credit，多智能体 Subagent 全量计入)")
+        print("  * 计价：DeepSeek-V4.1-Flash 高峰期等效基准 (供比对官方积分与理论 API 成本换算)")
+        print(f"  * 换算：{ratio_desc}")
+    else:
+        print("  * 计价：DeepSeek-V4.1-Flash 高峰期 (未命中 ¥2/M | 缓存命中 ¥0.04/M | 输出 ¥8/M)")
     print("=" * total_table_width)
 
     header = (
@@ -382,6 +466,7 @@ def render_session_table(data):
         pad_str("Output", w_output, "right") + " │ " +
         pad_str("Cache", w_cache, "right") + " │ " +
         pad_str("Hitrate", w_hit, "right") + " │ " +
+        credit_hdr +
         pad_str("等效价格", w_cost, "right") + " │ " +
         pad_str("会话标题", w_title, "left")
     )
@@ -397,6 +482,7 @@ def render_session_table(data):
             # 第一级：呈现单个项目的累计统计概况
             for s in day["records"]:
                 t_str = truncate_title(s["title"], w_title)
+                credit_col = (pad_str(f"{s.get('creditRaw', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
                 row = (
                     pad_str(str(global_idx), w_rank, "center") + " │ " +
                     pad_str(s["time"], w_time, "center") + " │ " +
@@ -405,6 +491,7 @@ def render_session_table(data):
                     pad_str(format_tokens(s["outputTokens"]), w_output, "right") + " │ " +
                     pad_str(format_tokens(s["cacheTokens"]), w_cache, "right") + " │ " +
                     pad_str(format_hitrate(s["cacheTokens"], s["inputTokens"]), w_hit, "right") + " │ " +
+                    credit_col +
                     pad_str(f"¥{s['costCnyRaw']:.2f}", w_cost, "right") + " │ " +
                     pad_str(t_str, w_title, "left")
                 )
@@ -414,6 +501,7 @@ def render_session_table(data):
             # 第二级：日小计
             day_short = day["date"][5:] if len(day["date"]) >= 10 else day["date"]
             day_time_label = f"{day_short}({day['weekday']}) 小计"
+            day_credit_col = (pad_str(f"{day.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
             day_subtotal_row = (
                 pad_str("日计", w_rank, "center") + " │ " +
                 pad_str(day_time_label, w_time, "center") + " │ " +
@@ -422,6 +510,7 @@ def render_session_table(data):
                 pad_str(format_tokens(day["outputTokens"]), w_output, "right") + " │ " +
                 pad_str(format_tokens(day["cacheTokens"]), w_cache, "right") + " │ " +
                 pad_str(format_hitrate(day["cacheTokens"], day["inputTokens"]), w_hit, "right") + " │ " +
+                day_credit_col +
                 pad_str(f"¥{day['costCny']:.2f}", w_cost, "right") + " │ " +
                 pad_str(f"当日活跃项目 ({day['count']} 个会话)", w_title, "left")
             )
@@ -429,6 +518,7 @@ def render_session_table(data):
             print("·" * total_table_width)
 
         # 第三级：周小计
+        week_credit_col = (pad_str(f"{week.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
         week_subtotal_row = (
             pad_str("周计", w_rank, "center") + " │ " +
             pad_str(f"{week['weekKey']} 小计", w_time, "center") + " │ " +
@@ -437,6 +527,7 @@ def render_session_table(data):
             pad_str(format_tokens(week["outputTokens"]), w_output, "right") + " │ " +
             pad_str(format_tokens(week["cacheTokens"]), w_cache, "right") + " │ " +
             pad_str(format_hitrate(week["cacheTokens"], week["inputTokens"]), w_hit, "right") + " │ " +
+            week_credit_col +
             pad_str(f"¥{week['costCny']:.2f}", w_cost, "right") + " │ " +
             pad_str(f"本周活跃项目 ({week['count']} 个会话)", w_title, "left")
         )
@@ -444,6 +535,12 @@ def render_session_table(data):
         print("─" * total_table_width)
 
     # 第四级：全周期合计
+    sum_credit_col = (pad_str(f"{sum_info.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
+    summary_label = f"共 {len(sessions)} 个项目会话 (~${sum_info['costUsd']:.2f} USD)"
+    if is_workbuddy and sum_info.get("credit", 0.0) > 0 and sum_info.get("costCny", 0.0) > 0:
+        cr = sum_info['credit']
+        cy = sum_info['costCny']
+        summary_label = f"共 {len(sessions)} 个项目会话 (1 积分 ≈ ¥{cy / cr:.3f} 等效基准, ~${sum_info['costUsd']:.2f} USD)"
     grand_total_row = (
         pad_str("汇总", w_rank, "center") + " │ " +
         pad_str("全周期合计", w_time, "center") + " │ " +
@@ -452,8 +549,9 @@ def render_session_table(data):
         pad_str(format_tokens(sum_info["outputTokens"]), w_output, "right") + " │ " +
         pad_str(format_tokens(sum_info["cacheTokens"]), w_cache, "right") + " │ " +
         pad_str(format_hitrate(sum_info["cacheTokens"], sum_info["inputTokens"]), w_hit, "right") + " │ " +
+        sum_credit_col +
         pad_str(f"¥{sum_info['costCny']:.2f}", w_cost, "right") + " │ " +
-        pad_str(f"共 {len(sessions)} 个项目会话 (~${sum_info['costUsd']:.2f} USD)", w_title, "left")
+        pad_str(summary_label, w_title, "left")
     )
     print(grand_total_row)
     print("=" * total_table_width)
@@ -485,23 +583,27 @@ def render_quick_summary(summary):
         w_name = 24
         w_tok = 12
         w_hit = 10
-        w_cost = 12
+        w_cost = 14
         w_sess = 10
         hdr = (
             pad_str("Agent 名称", w_name, "left") + " │ " +
             pad_str("今日Token", w_tok, "right") + " │ " +
             pad_str("缓存率", w_hit, "right") + " │ " +
-            pad_str("等效费用", w_cost, "right") + " │ " +
+            pad_str("费用/积分", w_cost, "right") + " │ " +
             pad_str("会话数", w_sess, "right")
         )
         print(hdr)
         print("─" * total_table_width)
         for a in agents:
+            if a.get("id") == "workbuddy" and a.get("credit", 0.0) > 0:
+                cost_disp = f"{a['credit']:.1f}积/¥{a['costCny']:.2f}"
+            else:
+                cost_disp = f"¥{a['costCny']:.2f}"
             row = (
                 pad_str(a["name"], w_name, "left") + " │ " +
                 pad_str(format_tokens(a["totalTokens"]), w_tok, "right") + " │ " +
                 pad_str(f"{a['hitRate']:.1f}%", w_hit, "right") + " │ " +
-                pad_str(f"¥{a['costCny']:.2f}", w_cost, "right") + " │ " +
+                pad_str(cost_disp, w_cost, "right") + " │ " +
                 pad_str(f"{a['sessionCount']} 笔", w_sess, "right")
             )
             print(row)
@@ -544,13 +646,24 @@ def render_model_table(data, agent_type=None):
         print("=" * term_width)
         return
 
+    is_workbuddy = (agent_type == "workbuddy")
     total_tok = totals.get("totalTokens", 0) or 1
-    w_name, w_tok, w_pct, w_call, w_agent = 30, 12, 7, 10, 24
+    w_name = 28
+    w_tok = 11
+    w_pct = 7
+    w_credit = 10 if is_workbuddy else 0
+    w_call = 9
+    w_agent = 20
+
+    credit_hdr = (pad_str("官方积分", w_credit, "right") + " │ ") if is_workbuddy else ""
+    extra_w = 13 if is_workbuddy else 0
+    term_width = max(term_width, 78 + extra_w)
 
     print(
         pad_str("模型名称", w_name, "left") + " │ " +
         pad_str("Token 总量", w_tok, "right") + " │ " +
         pad_str("占比", w_pct, "right") + " │ " +
+        credit_hdr +
         pad_str("调用次数", w_call, "right") + " │ " +
         pad_str("来源 Agent", w_agent, "left")
     )
@@ -560,17 +673,20 @@ def render_model_table(data, agent_type=None):
         agents_str = ",".join(m.get("agents", {}).keys())
         if display_len(agents_str) > w_agent:
             agents_str = agents_str[:w_agent - 2] + "…"
+        credit_col = (pad_str(f"{m.get('credit', 0.0):.2f}", w_credit, "right") + " │ ") if is_workbuddy else ""
         print(
             pad_str(m.get("model", ""), w_name, "left") + " │ " +
             pad_str(format_tokens(m.get("totalTokens", 0)), w_tok, "right") + " │ " +
             pad_str(f"{m.get('totalTokens', 0) / total_tok * 100:.1f}%", w_pct, "right") + " │ " +
+            credit_col +
             pad_str(f"{m.get('calls', 0):,}", w_call, "right") + " │ " +
             pad_str(agents_str, w_agent, "left")
         )
 
     print("─" * term_width)
-    print(f"  合计: {len(models)} 个模型 │ {format_tokens(totals.get('totalTokens', 0))} Tokens │ "
-          f"{totals.get('calls', 0):,} 次调用")
+    credit_sum_str = f" │ {totals.get('credit', 0.0):.2f} 官方积分" if is_workbuddy else ""
+    print(f"  合计: {len(models)} 个模型 │ {format_tokens(totals.get('totalTokens', 0))} Tokens"
+          f"{credit_sum_str} │ {totals.get('calls', 0):,} 次调用")
 
     unknown_tok = totals.get("unknownTokens", 0)
     if unknown_tok:

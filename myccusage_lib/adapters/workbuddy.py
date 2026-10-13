@@ -192,15 +192,23 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                 date_str = ms_to_date_str(ts)
                                 iso_str = ms_to_iso(ts)
 
-                                # 兼容 rawUsage 与 usage 两种特殊数据格式
+                                # 兼容 rawUsage 与 usage 两种特殊数据格式并提取官方积分
+                                credit = 0.0
                                 if ru:
                                     hit = ru.get("prompt_cache_hit_tokens", 0)
                                     miss = ru.get("prompt_cache_miss_tokens", 0)
                                     out = ru.get("completion_tokens", 0)
+                                    c_val = ru.get("credit")
+                                    if c_val is not None:
+                                        try:
+                                            credit = float(c_val)
+                                        except (ValueError, TypeError):
+                                            credit = 0.0
                                 else:
                                     if "input_tokens" in u:
-                                        miss = u.get("input_tokens", 0)
-                                        hit = 0
+                                        inp = u.get("input_tokens", 0)
+                                        hit = u.get("cache_read_input_tokens", 0)
+                                        miss = max(0, inp - hit)
                                         out = u.get("output_tokens", 0)
                                     else:
                                         inp = u.get("inputTokens", 0)
@@ -209,7 +217,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                         out = u.get("outputTokens", 0)
                                 tot = hit + miss + out
                                 model = normalize_model_name(pd.get("requestModelName") or pd.get("requestModelId") or pd.get("model"))
-                                records.append((sid, date_str, iso_str, miss, hit, out, tot, model))
+                                records.append((sid, date_str, iso_str, miss, hit, out, tot, model, credit))
                     except Exception:
                         records = cached[2] if cached else []
                     else:
