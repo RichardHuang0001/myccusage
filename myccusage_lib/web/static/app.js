@@ -210,6 +210,8 @@
     modelTrendRange: '30',
     highlightedModel: null,
     modelTrendChartInstance: null,
+    modelDonutRange: '14',
+    modelDonutChartInstance: null,
     syncState: null,
 
     // 模型维度视图 (Models) 专属状态
@@ -347,6 +349,11 @@
     modelTrendScrollCanvasWrap: document.getElementById('modelTrendScrollCanvasWrap'),
     modelTrendChartCanvas: document.getElementById('modelTrendChartCanvas'),
     modelTrendChartFallback: document.getElementById('modelTrendChartFallback'),
+    modelDonutRangeSelector: document.getElementById('modelDonutRangeSelector'),
+    modelDonutChartCanvas: document.getElementById('modelDonutChartCanvas'),
+    modelDonutFallback: document.getElementById('modelDonutFallback'),
+    modelDonutStats: document.getElementById('modelDonutStats'),
+    modelDonutSubtitle: document.getElementById('modelDonutSubtitle'),
     ledgerContainer: document.getElementById('ledgerContainer'),
     toast: document.getElementById('toast'),
 
@@ -1840,6 +1847,13 @@
       }
     });
 
+    bindRangeSelector(el.modelDonutRangeSelector, (r) => {
+      state.modelDonutRange = r;
+      if (state.allAgentsData && state.modelsData) {
+        renderModelDonutChart(state.allAgentsData, state.modelsData);
+      }
+    });
+
     // 窗口尺寸变化自适应重绘
     window.addEventListener('resize', () => {
       clearTimeout(window._trendResizeTimer);
@@ -1849,6 +1863,7 @@
           renderRaceChart(state.allAgentsData);
           if (state.modelsData) {
             renderModelTrendChart(state.allAgentsData, state.modelsData);
+            renderModelDonutChart(state.allAgentsData, state.modelsData);
           }
         } else if (state.data) {
           renderCharts(state.data);
@@ -1876,6 +1891,7 @@
       renderRaceChart(state.allAgentsData);
       if (state.modelsData) {
         renderModelTrendChart(state.allAgentsData, state.modelsData);
+        renderModelDonutChart(state.allAgentsData, state.modelsData);
       }
     } else if (state.data) {
       renderCharts(state.data);
@@ -2958,6 +2974,151 @@
     }
   }
 
+  // ==========================================================================
+  // 全模型份额占比圆环图 (All Models Share Donut Chart)
+  // ==========================================================================
+
+  function renderModelDonutChart(allData, modelsData) {
+    const dataToUse = modelsData || state.modelsData;
+    const allDataToUse = allData || state.allAgentsData;
+    if (!dataToUse || !dataToUse.byDate || !el.modelDonutChartCanvas || typeof Chart === 'undefined') {
+      if (el.modelDonutFallback) el.modelDonutFallback.style.display = 'block';
+      return;
+    }
+
+    const daily = (allDataToUse && allDataToUse.dailyTrend) || [];
+    if (!daily.length) {
+      if (el.modelDonutFallback) el.modelDonutFallback.style.display = 'block';
+      return;
+    }
+    if (el.modelDonutFallback) el.modelDonutFallback.style.display = 'none';
+
+    const byDate = dataToUse.byDate || {};
+    const latestDate = daily[daily.length - 1].date;
+    let startDate = latestDate;
+
+    if (state.modelDonutRange === 'today') {
+      startDate = latestDate;
+      if (el.modelDonutSubtitle) el.modelDonutSubtitle.textContent = `📅 今日 (${latestDate}) 各模型用量分布`;
+    } else if (state.modelDonutRange === '7') {
+      startDate = daily[Math.max(0, daily.length - 7)].date;
+      if (el.modelDonutSubtitle) el.modelDonutSubtitle.textContent = `📅 近 7 天 (${startDate} ~ ${latestDate})`;
+    } else if (state.modelDonutRange === '14') {
+      startDate = daily[Math.max(0, daily.length - 14)].date;
+      if (el.modelDonutSubtitle) el.modelDonutSubtitle.textContent = `📅 近 14 天 (${startDate} ~ ${latestDate})`;
+    } else if (state.modelDonutRange === '30') {
+      startDate = daily[Math.max(0, daily.length - 30)].date;
+      if (el.modelDonutSubtitle) el.modelDonutSubtitle.textContent = `📅 近 30 天 (${startDate} ~ ${latestDate})`;
+    }
+
+    // 复用已有的按时间范围聚合组件 aggregateModelsInRange (纯内存 O(N) 快速聚合)
+    const aggregated = aggregateModelsInRange(startDate, latestDate, byDate);
+    const totalTokens = aggregated.reduce((acc, m) => acc + (m.totalTokens || 0), 0);
+
+    if (totalTokens <= 0) {
+      if (el.modelDonutFallback) el.modelDonutFallback.style.display = 'block';
+      if (el.modelDonutStats) el.modelDonutStats.innerHTML = '<div class="empty-state">所选时段暂无模型用量记录</div>';
+      if (state.modelDonutChartInstance) {
+        state.modelDonutChartInstance.destroy();
+        state.modelDonutChartInstance = null;
+      }
+      return;
+    }
+
+    const TOP_N = 6;
+    const hasOthers = aggregated.length > TOP_N;
+    const mainModels = hasOthers ? aggregated.slice(0, TOP_N) : aggregated;
+    const otherModels = hasOthers ? aggregated.slice(TOP_N) : [];
+
+    const donutItems = mainModels.map((m, idx) => ({
+      name: m.model === 'unknown' ? 'unknown (未指定)' : m.model,
+      tokens: m.totalTokens,
+      color: MODEL_SHARE_PALETTE[idx % MODEL_SHARE_PALETTE.length],
+      pct: ((m.totalTokens / totalTokens) * 100).toFixed(1)
+    }));
+
+    if (hasOthers) {
+      const otherTokens = otherModels.reduce((acc, m) => acc + m.totalTokens, 0);
+      if (otherTokens > 0) {
+        donutItems.push({
+          name: `其他 (${otherModels.length} 款模型)`,
+          tokens: otherTokens,
+          color: MODEL_SHARE_REST_COLOR,
+          pct: ((otherTokens / totalTokens) * 100).toFixed(1)
+        });
+      }
+    }
+
+    // 渲染右侧 Stats 条目
+    if (el.modelDonutStats) {
+      let statsHtml = '';
+      donutItems.forEach(item => {
+        statsHtml += `
+          <div class="model-donut-stat-item" title="${escapeHtml(item.name)}: ${formatTokens(item.tokens)} (${item.pct}%)">
+            <div class="model-donut-stat-header">
+              <span class="model-donut-stat-name">
+                <span class="legend-dot" style="background-color: ${item.color};"></span>
+                <span>${escapeHtml(item.name)}</span>
+              </span>
+              <span class="model-donut-stat-val">${item.pct}% <span style="font-weight:400;opacity:0.75;font-size:0.7rem;">(${formatTokens(item.tokens)})</span></span>
+            </div>
+            <div class="model-donut-stat-bar">
+              <div class="model-donut-stat-fill" style="width: ${item.pct}%; background-color: ${item.color};"></div>
+            </div>
+          </div>
+        `;
+      });
+      el.modelDonutStats.innerHTML = statsHtml;
+    }
+
+    // 渲染 Chart.js Doughnut 环形图
+    if (state.modelDonutChartInstance) {
+      state.modelDonutChartInstance.destroy();
+      state.modelDonutChartInstance = null;
+    }
+
+    const isDark = state.isDarkTheme;
+
+    state.modelDonutChartInstance = new Chart(el.modelDonutChartCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: donutItems.map(d => d.name),
+        datasets: [{
+          data: donutItems.map(d => d.tokens),
+          backgroundColor: donutItems.map(d => d.color),
+          borderWidth: 1.5,
+          borderColor: isDark ? '#1e293b' : '#ffffff',
+          hoverOffset: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '66%',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+            titleColor: isDark ? '#f8fafc' : '#0f172a',
+            bodyColor: isDark ? '#cbd5e1' : '#334155',
+            borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+            borderWidth: 1,
+            padding: 10,
+            boxPadding: 4,
+            usePointStyle: true,
+            callbacks: {
+              label: function (ctx) {
+                const val = ctx.raw || 0;
+                const p = totalTokens > 0 ? ((val / totalTokens) * 100).toFixed(1) : 0;
+                return ` ${ctx.label}: ${formatTokens(val)} (${p}%)`;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
   // 3. 全景对比视图渲染
   function renderAllAgentsOverview(allData) {
     const gs = allData.grandSummary;
@@ -3066,9 +3227,10 @@
     // 6) 渲染多 Agent 每日用量竞赛折线图
     renderRaceChart(allData);
 
-    // 7) 渲染全模型每日用量走势折线图
+    // 7) 渲染全模型每日用量走势折线图与份额环形图
     if (state.modelsData) {
       renderModelTrendChart(allData, state.modelsData);
+      renderModelDonutChart(allData, state.modelsData);
     }
   }
 

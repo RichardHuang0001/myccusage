@@ -2003,6 +2003,110 @@ body.light-theme .navbar {
 }
 
 /* ==========================================================================
+   多模型走势与份额双模块网格布局 (Model Trend & Share Grid)
+   ========================================================================== */
+.model-grid-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 20px;
+  margin-bottom: 24px;
+  width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .model-grid-section {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.model-trend-card,
+.model-share-card {
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.model-donut-body {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex: 1;
+  min-height: 320px;
+}
+
+@media (max-width: 640px) {
+  .model-donut-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.model-donut-canvas-wrap {
+  width: 170px;
+  height: 170px;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 auto;
+}
+
+.model-donut-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-grow: 1;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.model-donut-stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.model-donut-stat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.model-donut-stat-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text-primary);
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-donut-stat-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.model-donut-stat-bar {
+  height: 5px;
+  background-color: var(--bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.model-donut-stat-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* ==========================================================================
    多端 Git 私有同步样式 (Multi-Device Git Sync Styles)
    ========================================================================== */
 
