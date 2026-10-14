@@ -774,13 +774,19 @@ class FloatingPopoverWindow: NSPanel {
     }
     
     func showNearDock() {
-        guard let screen = NSScreen.main else {
+        let mouseLoc = NSEvent.mouseLocation
+        
+        // 核心修复：双屏/多屏环境下，必须优先定位到用户鼠标当前所在（即点击 Dock 栏所在）的真实物理屏幕，
+        // 彻底杜绝因 NSScreen.main 指向活跃 Key Window 屏幕而导致的“卡片在另一屏幕展开”的 Bug。
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) })
+                ?? NSScreen.main
+                ?? NSScreen.screens.first else {
             self.center()
             self.makeKeyAndOrderFront(nil)
             return
         }
         
-        // 核心修复：根据 SwiftUI 实际撑开的内容高度动态收紧窗口，杜绝窗口空高导致的贴紧 Dock
+        // 根据 SwiftUI 实际撑开的内容高度动态收紧窗口，杜绝窗口空高导致的贴紧 Dock
         if let hv = self.contentView {
             let fit = hv.fittingSize
             if fit.width > 0 && fit.height > 0 {
@@ -791,7 +797,6 @@ class FloatingPopoverWindow: NSPanel {
         let screenRect = screen.visibleFrame
         let fullRect = screen.frame
         let windowSize = self.frame.size
-        let mouseLoc = NSEvent.mouseLocation
         
         var targetX: CGFloat
         var targetY: CGFloat
