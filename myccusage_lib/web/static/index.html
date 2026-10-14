@@ -431,6 +431,42 @@
         </div>
       </section>
 
+      <!-- 全局多模型每日用量走势折线图 (仅在全景对比模式呈现) -->
+      <section class="chart-card race-chart-card" id="modelTrendChartSection" style="display: none;">
+        <div class="chart-card-header race-chart-header">
+          <div class="chart-title">
+            <span class="chart-icon">📈</span>
+            <span id="modelTrendTitle">全模型每日用量走势</span>
+            <span class="race-chart-sub">横轴活跃日期 · 纵轴当日消耗 · 悬停查看模型分布 · 点击图例高亮单线</span>
+          </div>
+          <div class="race-chart-actions">
+            <div class="race-range-selector" id="modelTrendRangeSelector">
+              <button class="race-range-btn" data-range="14">近 14 天</button>
+              <button class="race-range-btn active" data-range="30">近 30 天</button>
+              <button class="race-range-btn" data-range="all">全部历史</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 交互式 Model 图例：支持点击单独高亮/聚焦某 Model -->
+        <div class="race-legend-bar" id="modelTrendLegendBar">
+          <!-- 动态渲染各 Model 徽章与彩色指示点 -->
+        </div>
+
+        <div class="chart-body race-chart-body">
+          <!-- 固定左侧 Token Y 轴刻度 -->
+          <div class="trend-y-axis trend-y-axis-left" id="modelTrendYAxisLeft"></div>
+
+          <!-- 小组件内部的横移主视口 -->
+          <div class="trend-scroll-viewport" id="modelTrendScrollViewport">
+            <div class="trend-scroll-canvas-wrap" id="modelTrendScrollCanvasWrap">
+              <canvas id="modelTrendChartCanvas"></canvas>
+            </div>
+            <div id="modelTrendChartFallback" class="chart-fallback" style="display: none;">暂无时序数据</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 搜索与表格展示区 -->
       <section class="table-section" id="tableSection">
         <div class="table-header-bar">
@@ -459,7 +495,7 @@
     <!-- 底部状态栏 -->
     <footer class="footer">
       <div class="footer-left">
-        <span>myccusage v1.8.0</span>
+        <span>myccusage v1.8.1</span>
         <span class="divider">|</span>
         <span>本地缓存源: <code>~/.cache/myccusage/</code></span>
       </div>

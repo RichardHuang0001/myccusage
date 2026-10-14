@@ -207,6 +207,9 @@
     highlightedAgent: null,
     hiddenAgents: new Set(),
     raceChartInstance: null,
+    modelTrendRange: '30',
+    highlightedModel: null,
+    modelTrendChartInstance: null,
     syncState: null,
 
     // 模型维度视图 (Models) 专属状态
@@ -335,6 +338,15 @@
     raceLegendBar: document.getElementById('raceLegendBar'),
     raceRangeSelector: document.getElementById('raceRangeSelector'),
     raceChartFallback: document.getElementById('raceChartFallback'),
+    modelTrendChartSection: document.getElementById('modelTrendChartSection'),
+    modelTrendTitle: document.getElementById('modelTrendTitle'),
+    modelTrendRangeSelector: document.getElementById('modelTrendRangeSelector'),
+    modelTrendLegendBar: document.getElementById('modelTrendLegendBar'),
+    modelTrendYAxisLeft: document.getElementById('modelTrendYAxisLeft'),
+    modelTrendScrollViewport: document.getElementById('modelTrendScrollViewport'),
+    modelTrendScrollCanvasWrap: document.getElementById('modelTrendScrollCanvasWrap'),
+    modelTrendChartCanvas: document.getElementById('modelTrendChartCanvas'),
+    modelTrendChartFallback: document.getElementById('modelTrendChartFallback'),
     ledgerContainer: document.getElementById('ledgerContainer'),
     toast: document.getElementById('toast'),
 
@@ -1772,78 +1784,61 @@
         }
       });
 
-      // 鼠标按住拖拽滑动 (Drag to scroll)
-      let isMouseDown = false;
-      let startMouseX = 0;
-      let startScrollLeft = 0;
+      // 通用横向拖拽滑动组件 (Reusable horizontal drag-to-scroll)
+      function enableDragScroll(viewport) {
+        if (!viewport) return;
+        let isDown = false;
+        let startX = 0;
+        let startLeft = 0;
+        viewport.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          isDown = true;
+          viewport.classList.add('grabbing');
+          startX = e.pageX - viewport.offsetLeft;
+          startLeft = viewport.scrollLeft;
+        });
+        window.addEventListener('mouseup', () => {
+          if (isDown) {
+            isDown = false;
+            viewport.classList.remove('grabbing');
+          }
+        });
+        viewport.addEventListener('mousemove', (e) => {
+          if (!isDown) return;
+          e.preventDefault();
+          const walk = (e.pageX - viewport.offsetLeft - startX) * 1.5;
+          viewport.scrollLeft = startLeft - walk;
+        });
+      }
 
-      el.trendScrollViewport.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        isMouseDown = true;
-        el.trendScrollViewport.classList.add('grabbing');
-        startMouseX = e.pageX - el.trendScrollViewport.offsetLeft;
-        startScrollLeft = el.trendScrollViewport.scrollLeft;
-      });
-
-      window.addEventListener('mouseup', () => {
-        if (isMouseDown) {
-          isMouseDown = false;
-          if (el.trendScrollViewport) el.trendScrollViewport.classList.remove('grabbing');
-        }
-      });
-
-      el.trendScrollViewport.addEventListener('mousemove', (e) => {
-        if (!isMouseDown) return;
-        e.preventDefault();
-        const currentX = e.pageX - el.trendScrollViewport.offsetLeft;
-        const walk = (currentX - startMouseX) * 1.5;
-        el.trendScrollViewport.scrollLeft = startScrollLeft - walk;
-      });
+      enableDragScroll(el.trendScrollViewport);
+      enableDragScroll(el.raceScrollViewport);
+      enableDragScroll(el.modelTrendScrollViewport);
     }
 
-    // 竞赛折线图时间范围切换
-    if (el.raceRangeSelector) {
-      el.raceRangeSelector.querySelectorAll('.race-range-btn').forEach(btn => {
+    // 通用时序范围切换绑定
+    function bindRangeSelector(container, onRangeChange) {
+      if (!container) return;
+      container.querySelectorAll('.race-range-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          el.raceRangeSelector.querySelectorAll('.race-range-btn').forEach(b => b.classList.remove('active'));
+          container.querySelectorAll('.race-range-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
-          state.raceRange = btn.getAttribute('data-range') || '30';
-          if (state.allAgentsData) {
-            renderRaceChart(state.allAgentsData);
-          }
+          onRangeChange(btn.getAttribute('data-range') || '30');
         });
       });
     }
 
-    // 竞赛折线图内部横滑鼠标拖拽
-    if (el.raceScrollViewport) {
-      let isRaceMouseDown = false;
-      let startRaceMouseX = 0;
-      let startRaceScrollLeft = 0;
+    bindRangeSelector(el.raceRangeSelector, (r) => {
+      state.raceRange = r;
+      if (state.allAgentsData) renderRaceChart(state.allAgentsData);
+    });
 
-      el.raceScrollViewport.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        isRaceMouseDown = true;
-        el.raceScrollViewport.classList.add('grabbing');
-        startRaceMouseX = e.pageX - el.raceScrollViewport.offsetLeft;
-        startRaceScrollLeft = el.raceScrollViewport.scrollLeft;
-      });
-
-      window.addEventListener('mouseup', () => {
-        if (isRaceMouseDown) {
-          isRaceMouseDown = false;
-          if (el.raceScrollViewport) el.raceScrollViewport.classList.remove('grabbing');
-        }
-      });
-
-      el.raceScrollViewport.addEventListener('mousemove', (e) => {
-        if (!isRaceMouseDown) return;
-        e.preventDefault();
-        const currentX = e.pageX - el.raceScrollViewport.offsetLeft;
-        const walk = (currentX - startRaceMouseX) * 1.5;
-        el.raceScrollViewport.scrollLeft = startRaceScrollLeft - walk;
-      });
-    }
+    bindRangeSelector(el.modelTrendRangeSelector, (r) => {
+      state.modelTrendRange = r;
+      if (state.allAgentsData && state.modelsData) {
+        renderModelTrendChart(state.allAgentsData, state.modelsData);
+      }
+    });
 
     // 窗口尺寸变化自适应重绘
     window.addEventListener('resize', () => {
@@ -1852,6 +1847,9 @@
         if (state.agent === 'all' && state.allAgentsData) {
           renderCharts(state.allAgentsData);
           renderRaceChart(state.allAgentsData);
+          if (state.modelsData) {
+            renderModelTrendChart(state.allAgentsData, state.modelsData);
+          }
         } else if (state.data) {
           renderCharts(state.data);
         }
@@ -1876,6 +1874,9 @@
     if (state.agent === 'all' && state.allAgentsData) {
       renderCharts(state.allAgentsData);
       renderRaceChart(state.allAgentsData);
+      if (state.modelsData) {
+        renderModelTrendChart(state.allAgentsData, state.modelsData);
+      }
     } else if (state.data) {
       renderCharts(state.data);
     }
@@ -1898,6 +1899,7 @@
       el.chartsSection.style.display = 'none';
       el.allAgentsSection.style.display = 'none';
       if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+      if (el.modelTrendChartSection) el.modelTrendChartSection.style.display = 'none';
       if (el.tableSection) el.tableSection.style.display = 'none';
       return;
     }
@@ -1905,13 +1907,15 @@
     if (el.kpiSection) el.kpiSection.style.display = 'grid';
     el.chartsSection.style.display = 'grid';
     if (state.agent === 'all') {
-      // 全景对比：展示各 Agent 对比卡片与竞赛折线图，隐藏单 Agent 账本区
+      // 全景对比：展示各 Agent 对比卡片与竞赛折线图及全模型走势图，隐藏单 Agent 账本区
       el.allAgentsSection.style.display = 'block';
       if (el.raceChartSection) el.raceChartSection.style.display = 'block';
+      if (el.modelTrendChartSection) el.modelTrendChartSection.style.display = 'block';
       if (el.tableSection) el.tableSection.style.display = 'none';
     } else {
       el.allAgentsSection.style.display = 'none';
       if (el.raceChartSection) el.raceChartSection.style.display = 'none';
+      if (el.modelTrendChartSection) el.modelTrendChartSection.style.display = 'none';
       if (el.tableSection) el.tableSection.style.display = 'block';
     }
   }
@@ -1936,11 +1940,17 @@
 
     if (state.agent === 'all') {
       try {
-        const res = await fetch('/api/all');
-        const json = await res.json();
+        const [allRes, modelsRes] = await Promise.all([
+          fetch('/api/all'),
+          fetch('/api/models?agent=all')
+        ]);
+        const json = await allRes.json();
+        const modelsJson = await modelsRes.json();
         state.allAgentsData = json;
+        state.modelsData = modelsJson;
         state.data = json;
         renderAllAgentsOverview(json);
+        renderModelTrendChart(json, modelsJson);
       } catch (err) {
         el.ledgerContainer.innerHTML = `<div class="empty-state">❌ 拉取全景数据失败: ${err.message}</div>`;
       }
@@ -2465,22 +2475,19 @@
     workbuddy: { stroke: '#f43f5e', bg: 'rgba(244, 63, 94, 0.15)', name: 'WorkBuddy' },
   };
 
-  function renderRaceYAxisOverlays(chartInstance) {
-    const chart = chartInstance || state.raceChartInstance;
-    if (!chart || !chart.scales) return;
+  // 通用 Chart.js Y 轴刻度同步覆盖层组件
+  function syncYAxisTicksOverlay(chart, overlayEl) {
+    if (!chart || !chart.scales || !overlayEl) return;
     const yScale = chart.scales.y;
-    if (!yScale) return;
-
-    if (el.raceYAxisLeft && Array.isArray(yScale.ticks)) {
-      let leftHtml = '';
-      yScale.ticks.forEach(t => {
-        const px = yScale.getPixelForValue(t.value);
-        if (typeof px === 'number' && !isNaN(px)) {
-          leftHtml += `<span class="y-axis-label y-axis-label-left" style="top:${px}px;">${formatTokens(t.value)}</span>`;
-        }
-      });
-      el.raceYAxisLeft.innerHTML = leftHtml;
-    }
+    if (!yScale || !Array.isArray(yScale.ticks)) return;
+    let html = '';
+    yScale.ticks.forEach(t => {
+      const px = yScale.getPixelForValue(t.value);
+      if (typeof px === 'number' && !isNaN(px)) {
+        html += `<span class="y-axis-label y-axis-label-left" style="top:${px}px;">${formatTokens(t.value)}</span>`;
+      }
+    });
+    overlayEl.innerHTML = html;
   }
 
   function renderRaceLegend(allData) {
@@ -2607,7 +2614,7 @@
     const syncRaceYAxisPlugin = {
       id: 'syncRaceYAxisOverlays',
       afterLayout: (chart) => {
-        renderRaceYAxisOverlays(chart);
+        syncYAxisTicksOverlay(chart, el.raceYAxisLeft);
       }
     };
 
@@ -2685,6 +2692,266 @@
         if (el.raceScrollViewport) {
           const maxScroll = el.raceScrollViewport.scrollWidth - el.raceScrollViewport.clientWidth;
           el.raceScrollViewport.scrollLeft = maxScroll;
+        }
+      }, 50);
+    }
+  }
+
+  // ==========================================================================
+  // 全模型每日用量走势折线图 (All Models Daily Trend Line Chart)
+  // ==========================================================================
+
+  function renderModelTrendLegend(displayModels, allData, modelsData) {
+    if (!el.modelTrendLegendBar) return;
+    let html = '';
+    displayModels.forEach(m => {
+      const isDimmed = state.highlightedModel && state.highlightedModel !== m.id;
+      const isHighlighted = state.highlightedModel === m.id;
+
+      let classes = 'race-legend-pill';
+      if (isHighlighted) classes += ' highlighted';
+      if (isDimmed) classes += ' dimmed';
+
+      html += `
+        <div class="${classes}" data-model="${escapeHtml(m.id)}" title="点击聚焦高亮 ${escapeHtml(m.name)} 折线，再次点击取消">
+          <span class="race-legend-dot" style="background-color: ${m.color};"></span>
+          <span>${escapeHtml(m.name)}</span>
+          <span class="race-legend-val">${formatTokens(m.totalTokens)}</span>
+        </div>
+      `;
+    });
+
+    if (state.highlightedModel) {
+      html += `
+        <div class="race-legend-pill btn-reset-model-legend" style="border-style: dashed; color: var(--accent-blue);" title="还原所有折线">
+          <span>↺ 还原全部</span>
+        </div>
+      `;
+    }
+
+    el.modelTrendLegendBar.innerHTML = html;
+
+    el.modelTrendLegendBar.querySelectorAll('.race-legend-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        if (pill.classList.contains('btn-reset-model-legend')) {
+          state.highlightedModel = null;
+          renderModelTrendChart(allData, modelsData);
+          return;
+        }
+        const mid = pill.getAttribute('data-model');
+        if (state.highlightedModel === mid) {
+          state.highlightedModel = null;
+        } else {
+          state.highlightedModel = mid;
+        }
+        renderModelTrendChart(allData, modelsData);
+      });
+    });
+  }
+
+  function renderModelTrendChart(allData, modelsData) {
+    const dataToUse = modelsData || state.modelsData;
+    const allDataToUse = allData || state.allAgentsData;
+    if (!dataToUse || !dataToUse.byDate || typeof Chart === 'undefined') {
+      if (el.modelTrendChartFallback) el.modelTrendChartFallback.style.display = 'block';
+      return;
+    }
+
+    let trend = (allDataToUse && allDataToUse.dailyTrend) || [];
+    if (state.modelTrendRange === '14') {
+      trend = trend.slice(-14);
+    } else if (state.modelTrendRange === '30') {
+      trend = trend.slice(-30);
+    }
+
+    if (!trend.length) {
+      if (el.modelTrendChartFallback) el.modelTrendChartFallback.style.display = 'block';
+      return;
+    }
+    if (el.modelTrendChartFallback) el.modelTrendChartFallback.style.display = 'none';
+
+    // 复用已有的按时间范围聚合组件 aggregateModelsInRange (纯内存 O(N) 快速聚合)
+    const startDate = trend[0].date;
+    const endDate = trend[trend.length - 1].date;
+    const aggregated = aggregateModelsInRange(startDate, endDate);
+
+    const TOP_N = 8;
+    const hasOthers = aggregated.length > TOP_N;
+    const mainModels = hasOthers ? aggregated.slice(0, TOP_N) : aggregated;
+    const otherModels = hasOthers ? aggregated.slice(TOP_N) : [];
+    const otherNamesSet = new Set(otherModels.map(m => m.model));
+
+    const displayModels = mainModels.map((m, idx) => ({
+      id: m.model,
+      name: m.model === 'unknown' ? 'unknown (异机/未指定)' : m.model,
+      color: MODEL_SHARE_PALETTE[idx % MODEL_SHARE_PALETTE.length],
+      totalTokens: m.totalTokens
+    }));
+
+    if (hasOthers) {
+      const otherTokens = otherModels.reduce((acc, m) => acc + m.totalTokens, 0);
+      if (otherTokens > 0) {
+        displayModels.push({
+          id: '__others__',
+          name: `其他 (${otherModels.length} 款模型)`,
+          color: MODEL_SHARE_REST_COLOR,
+          totalTokens: otherTokens,
+          isOthers: true
+        });
+      }
+    }
+
+    renderModelTrendLegend(displayModels, allDataToUse, dataToUse);
+
+    const isDark = state.isDarkTheme;
+    const gridColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)';
+    const textColor = isDark ? '#9ca3af' : '#475569';
+
+    if (state.modelTrendChartInstance) {
+      state.modelTrendChartInstance.destroy();
+      state.modelTrendChartInstance = null;
+    }
+
+    const totalDays = trend.length;
+    const labels = trend.map(t => t.date.slice(5) + `(${t.weekday})`);
+
+    const viewportWidth = (el.modelTrendScrollViewport && el.modelTrendScrollViewport.clientWidth > 0)
+      ? el.modelTrendScrollViewport.clientWidth
+      : 600;
+
+    if (totalDays > 30) {
+      const dayWidth = Math.max(34, Math.floor(viewportWidth / 30));
+      const totalWidth = Math.round(totalDays * dayWidth);
+      if (el.modelTrendScrollCanvasWrap) {
+        el.modelTrendScrollCanvasWrap.style.width = `${totalWidth}px`;
+      }
+    } else {
+      if (el.modelTrendScrollCanvasWrap) {
+        el.modelTrendScrollCanvasWrap.style.width = '100%';
+      }
+    }
+
+    const datasets = [];
+    displayModels.forEach(m => {
+      const isHighlighted = state.highlightedModel === m.id;
+      const isDimmed = state.highlightedModel && state.highlightedModel !== m.id;
+
+      const lineData = trend.map(t => {
+        const dayList = byDate[t.date] || [];
+        if (m.isOthers) {
+          let sum = 0;
+          dayList.forEach(item => {
+            const mod = item.model || 'unknown';
+            if (otherNamesSet.has(mod)) {
+              sum += (item.totalTokens || 0);
+            }
+          });
+          return sum;
+        } else {
+          const found = dayList.find(item => (item.model || 'unknown') === m.id);
+          return found ? (found.totalTokens || 0) : 0;
+        }
+      });
+
+      datasets.push({
+        label: m.name,
+        modelId: m.id,
+        data: lineData,
+        borderColor: isDimmed ? 'rgba(156, 163, 175, 0.22)' : m.color,
+        backgroundColor: m.color,
+        borderWidth: isHighlighted ? 3.5 : (isDimmed ? 1.0 : 2.2),
+        pointBackgroundColor: isDimmed ? 'rgba(156, 163, 175, 0.22)' : m.color,
+        pointBorderColor: isDark ? '#1e293b' : '#ffffff',
+        pointBorderWidth: 1.5,
+        pointRadius: isHighlighted ? 4.5 : (isDimmed ? 1.0 : 3),
+        pointHoverRadius: 6,
+        tension: 0.25,
+        fill: false,
+        order: isHighlighted ? 1 : 10
+      });
+    });
+
+    const syncModelTrendYAxisPlugin = {
+      id: 'syncModelTrendYAxisOverlays',
+      afterLayout: (chart) => {
+        syncYAxisTicksOverlay(chart, el.modelTrendYAxisLeft);
+      }
+    };
+
+    state.modelTrendChartInstance = new Chart(el.modelTrendChartCanvas, {
+      type: 'line',
+      plugins: [syncModelTrendYAxisPlugin],
+      data: {
+        labels: labels,
+        datasets: datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 300 },
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+            titleColor: isDark ? '#f8fafc' : '#0f172a',
+            bodyColor: isDark ? '#cbd5e1' : '#334155',
+            borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+            borderWidth: 1,
+            padding: 12,
+            boxPadding: 6,
+            usePointStyle: true,
+            itemSort: (a, b) => (b.raw || 0) - (a.raw || 0),
+            callbacks: {
+              title: function (items) {
+                if (!items.length) return '';
+                const idx = items[0].dataIndex;
+                const d = trend[idx];
+                return d ? `📅 ${d.date} (${d.weekday})` : items[0].label;
+              },
+              label: function (ctx) {
+                const val = ctx.raw || 0;
+                if (val <= 0 && state.highlightedModel !== ctx.dataset.modelId) {
+                  return null;
+                }
+                return ` ${ctx.dataset.label}: ${formatTokens(val)}`;
+              },
+              footer: function (items) {
+                const activeItems = items.filter(it => (it.raw || 0) > 0);
+                const total = activeItems.reduce((acc, c) => acc + (c.raw || 0), 0);
+                return total > 0 ? `当日全模型总计: ${formatTokens(total)}` : '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: {
+              color: textColor,
+              font: { size: 10 }
+            }
+          },
+          y: {
+            position: 'left',
+            grid: { color: gridColor },
+            ticks: {
+              display: false,
+              font: { size: 10 }
+            }
+          }
+        }
+      }
+    });
+
+    if (totalDays > 30 && el.modelTrendScrollViewport) {
+      setTimeout(() => {
+        if (el.modelTrendScrollViewport) {
+          const maxScroll = el.modelTrendScrollViewport.scrollWidth - el.modelTrendScrollViewport.clientWidth;
+          el.modelTrendScrollViewport.scrollLeft = maxScroll;
         }
       }, 50);
     }
@@ -2797,6 +3064,11 @@
 
     // 6) 渲染多 Agent 每日用量竞赛折线图
     renderRaceChart(allData);
+
+    // 7) 渲染全模型每日用量走势折线图
+    if (state.modelsData) {
+      renderModelTrendChart(allData, state.modelsData);
+    }
   }
 
   // 4. 账本/项目列表渲染与过滤
