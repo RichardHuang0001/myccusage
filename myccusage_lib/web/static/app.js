@@ -1950,7 +1950,6 @@
         state.modelsData = modelsJson;
         state.data = json;
         renderAllAgentsOverview(json);
-        renderModelTrendChart(json, modelsJson);
       } catch (err) {
         el.ledgerContainer.innerHTML = `<div class="empty-state">❌ 拉取全景数据失败: ${err.message}</div>`;
       }
@@ -2770,10 +2769,12 @@
     }
     if (el.modelTrendChartFallback) el.modelTrendChartFallback.style.display = 'none';
 
+    const byDate = (dataToUse && dataToUse.byDate) || {};
+
     // 复用已有的按时间范围聚合组件 aggregateModelsInRange (纯内存 O(N) 快速聚合)
     const startDate = trend[0].date;
     const endDate = trend[trend.length - 1].date;
-    const aggregated = aggregateModelsInRange(startDate, endDate);
+    const aggregated = aggregateModelsInRange(startDate, endDate, byDate);
 
     const TOP_N = 8;
     const hasOthers = aggregated.length > TOP_N;
@@ -3198,8 +3199,8 @@
   }
 
   // 在 [start, end] 内按模型聚合（纯内存求和，无网络请求、无文件扫描）
-  function aggregateModelsInRange(start, end) {
-    const byDate = (state.modelsData && state.modelsData.byDate) || {};
+  function aggregateModelsInRange(start, end, customByDate) {
+    const byDate = customByDate || (state.modelsData && state.modelsData.byDate) || {};
     const map = new Map();
     for (const d in byDate) {
       if (d < start || d > end) continue;
