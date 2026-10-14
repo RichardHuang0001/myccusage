@@ -2826,6 +2826,33 @@
   const MODEL_SHARE_REST_COLOR = '#64748b';
   const MODEL_SHARE_UNKNOWN_COLOR = '#94a3b8';
 
+  function formatTaskModelBadge(r) {
+    const mName = r.modelName || 'unknown';
+    if (!mName || mName === 'unknown') {
+      return '<span class="task-model-badge cell-muted">—</span>';
+    }
+    const lower = mName.toLowerCase();
+    let badgeClass = '';
+    if (lower.includes('deepseek')) badgeClass = 'badge-deepseek';
+    else if (lower.includes('gemini')) badgeClass = 'badge-gemini';
+    else if (lower.includes('claude')) badgeClass = 'badge-claude';
+    else if (lower.includes('gpt') || lower.includes('codex')) badgeClass = 'badge-gpt';
+    else if (lower.includes('grok')) badgeClass = 'badge-grok';
+    else if (lower.includes('glm')) badgeClass = 'badge-glm';
+
+    const modelsMap = r.models || {};
+    const modelKeys = Object.keys(modelsMap);
+    let titleTip = `主模型: ${mName}`;
+    let extraTag = '';
+    if (modelKeys.length > 1) {
+      extraTag = ` <span style="opacity:0.8;font-size:0.68rem;">+${modelKeys.length - 1}</span>`;
+      const detailLines = modelKeys.map(k => `${k}: ${formatTokens(modelsMap[k].totalTokens || 0)} Tokens`);
+      titleTip = `包含多模型调用:\n${detailLines.join('\n')}`;
+    }
+
+    return `<span class="task-model-badge ${badgeClass}" title="${escapeHtml(titleTip)}">${escapeHtml(mName)}${extraTag}</span>`;
+  }
+
   function toDateStr(d) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
@@ -3292,6 +3319,7 @@
           <td class="col-output">${formatTokens(r.outputTokens)}</td>
           <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
           <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
+          <td class="col-task-model">${formatTaskModelBadge(r)}</td>
           ${creditHtml}
           <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
           <td class="col-title">
@@ -3318,6 +3346,7 @@
               <th class="col-output">Output</th>
               <th class="col-cache">Cache</th>
               <th class="col-hitrate">Hitrate</th>
+              <th class="col-task-model">模型</th>
               ${creditHeader}
               <th class="col-cost">等效费用 (CNY ¥)</th>
               <th class="col-title">会话标题</th>
@@ -3380,6 +3409,7 @@
               <td class="col-output">${formatTokens(r.outputTokens)}</td>
               <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
               <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
+              <td class="col-task-model">${formatTaskModelBadge(r)}</td>
               ${creditHtml}
               <td class="col-cost">${formatLedgerCost(model, rCost)}</td>
               <td class="col-title">
@@ -3424,6 +3454,7 @@
                     <th class="col-output">Output</th>
                     <th class="col-cache">Cache</th>
                     <th class="col-hitrate">Hitrate</th>
+                    <th class="col-task-model">模型</th>
                     ${tableCreditHeader}
                     <th class="col-cost">等效费用 (CNY ¥)</th>
                     <th class="col-title">会话标题</th>

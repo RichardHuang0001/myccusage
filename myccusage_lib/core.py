@@ -88,6 +88,19 @@ def format_time(iso_str):
         # 解析异常时直接截取前 10 个字符兜底
         return iso_str[:10]
 
+def extract_main_model(models_map: dict) -> str:
+    """
+    从会话的 models 字典中提取出贡献 Token 最大的主力模型名称。
+    若无明确模型或空字典，返回 'unknown'。
+    """
+    if not models_map:
+        return "unknown"
+    try:
+        # 按各模型实际消耗的 totalTokens 降序排序，取贡献最大的模型名
+        return max(models_map.items(), key=lambda kv: (kv[1].get("totalTokens", 0), kv[1].get("calls", 0)))[0]
+    except Exception:
+        return next(iter(models_map.keys()), "unknown")
+
 # ==================== 标题与元数据提取模块 ====================
 
 
@@ -274,6 +287,8 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                     "costCnyRaw": cost,
                     "credit": round(credit, 2),
                     "creditRaw": credit,
+                    "modelName": extract_main_model(s.get("models", {})),
+                    "models": s.get("models", {}),
                     "remoteDevice": s.get("remoteDevice", ""),
                     "isRemote": s.get("isRemote", False),
                 }
@@ -476,6 +491,8 @@ def get_session_data(agent_type, sort_by_tokens=False):
             "costCnyRaw": cost,
             "credit": round(credit, 2),
             "creditRaw": credit,
+            "modelName": extract_main_model(s.get("models", {})),
+            "models": s.get("models", {}),
             "remoteDevice": s.get("remoteDevice", ""),
             "isRemote": s.get("isRemote", False),
         })
