@@ -642,6 +642,7 @@ def get_all_agents_summary(force_refresh=False):
                 "outputTokens": sum_info.get("outputTokens", 0),
                 "costCny": sum_info.get("costCny", 0.0),
                 "costUsd": sum_info.get("costUsd", 0.0),
+                "credit": sum_info.get("credit", 0.0),
                 "recordsCount": rec_cnt,
                 "cacheHitRate": sum_info.get("cacheHitRate", 0.0),
                 "dailyTrend": daily_trend
@@ -657,6 +658,7 @@ def get_all_agents_summary(force_refresh=False):
                 "outputTokens": 0,
                 "costCny": 0.0,
                 "costUsd": 0.0,
+                "credit": 0.0,
                 "recordsCount": 0,
                 "cacheHitRate": 0.0,
                 "dailyTrend": []
@@ -1095,24 +1097,24 @@ def get_model_breakdown(agent_type=None):
 
     for aid in targets:
         adapter = ADAPTERS.get(aid)
-        if not adapter or not adapter.is_available():
-            continue
-        try:
-            daily_map, _ = adapter.fetch_data()
-        except Exception:
-            continue
-
         seen: set[tuple[str, str]] = set()
-        for d_str, entries in daily_map.items():
-            for entry in entries:
-                seen.add((d_str, entry.get("sessionId")))
-                models = entry.get("models")
-                if not models:
-                    continue
-                for mname, mv in models.items():
-                    _record(aid, d_str, mname, mv)
 
-        # 异机数据融合（与 get_daily_data 同口径，按 (日期, sessionId) 去重）
+        if adapter and adapter.is_available():
+            try:
+                daily_map, _ = adapter.fetch_data()
+            except Exception:
+                daily_map = {}
+
+            for d_str, entries in daily_map.items():
+                for entry in entries:
+                    seen.add((d_str, entry.get("sessionId")))
+                    models = entry.get("models")
+                    if not models:
+                        continue
+                    for mname, mv in models.items():
+                        _record(aid, d_str, mname, mv)
+
+        # 异机数据融合（即便本机未安装该 agent，也能融合异机数据，与 get_daily_data 同口径去重）
         remote_daily, _ = get_remote_agent_data(aid)
         if remote_daily:
             for d_str, r_list in remote_daily.items():
@@ -1122,13 +1124,19 @@ def get_model_breakdown(agent_type=None):
                     tot = rs.get("totalTokens", 0)
                     if tot <= 0:
                         continue
-                    _record(aid, d_str, UNKNOWN_MODEL, {
-                        "inputTokens": rs.get("inputTokens", 0),
-                        "cacheReadTokens": rs.get("cacheReadTokens", 0),
-                        "outputTokens": rs.get("outputTokens", 0),
-                        "totalTokens": tot,
-                        "calls": 0,  # 分片不含调用次数信息，不虚构
-                    })
+                    r_models = rs.get("models")
+                    if r_models and isinstance(r_models, dict):
+                        for mname, mv in r_models.items():
+                            _record(aid, d_str, mname, mv)
+                    else:
+                        _record(aid, d_str, UNKNOWN_MODEL, {
+                            "inputTokens": rs.get("inputTokens", 0),
+                            "cacheReadTokens": rs.get("cacheReadTokens", 0),
+                            "outputTokens": rs.get("outputTokens", 0),
+                            "totalTokens": tot,
+                            "calls": 0,  # 分片不含调用次数信息，不虚构
+                            "credit": float(rs.get("credit", 0.0) or 0.0),
+                        })
 
     def _sorted(container: dict) -> list[dict]:
         return sorted(container.values(), key=lambda x: -x["totalTokens"])

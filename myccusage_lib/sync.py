@@ -257,7 +257,7 @@ def _make_local_entry(s: dict[str, Any], device_id: str) -> dict[str, Any]:
     src = s.get("sourceDeviceId")
     if src and src != device_id:
         return {}
-    return {
+    entry = {
         "sessionId": s.get("sessionId", ""),
         "title": s.get("title", ""),
         "date": s.get("date", ""),
@@ -268,6 +268,15 @@ def _make_local_entry(s: dict[str, Any], device_id: str) -> dict[str, Any]:
         "lastActivity": s.get("lastActivity", ""),
         "sourceDeviceId": device_id,
     }
+    # 官方积分透传 (如 WorkBuddy 算力扣费)
+    credit = float(s.get("credit", 0.0) or s.get("creditRaw", 0.0) or 0.0)
+    if credit > 0:
+        entry["credit"] = round(credit, 4)
+    # 模型子结构透传 (支持全模型多维统计跨端聚合)
+    models = s.get("models")
+    if models and isinstance(models, dict):
+        entry["models"] = models
+    return entry
 
 def export_local_snapshot(device_id: str, device_name: str) -> dict[str, Any]:
     """
