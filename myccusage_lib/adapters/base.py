@@ -20,8 +20,8 @@ _CANDIDATE_HOME_DIRS: list[str] | None = None
 UNKNOWN_MODEL = "unknown"
 
 # 文件级持久缓存的 schema 版本。records 由 9 元组扩展为 10 元组（末尾追加 model_ms），
-# 旧缓存必须失效，否则会混入缺少 model_ms 的旧数据。版本不匹配时整体丢弃并重建一次。
-_FILE_CACHE_SCHEMA = 4
+# 旧缓存必须失效，否则会混入缺少 model_ms 或早期计算有偏差的数据。版本不匹配时整体丢弃并重建一次。
+_FILE_CACHE_SCHEMA = 5
 
 # 非真实模型的伪名（大小写不敏感），统一归入 UNKNOWN_MODEL
 _PSEUDO_MODELS = frozenset({"<synthetic>", "synthetic", "none", "null", "unknown", ""})
@@ -211,13 +211,18 @@ class BaseAgentAdapter:
             if len(rec) >= 10:
                 sid, date_str, iso_str, inp, cr, out, tot, model, credit, model_ms = rec[:10]
                 credit = float(credit or 0.0)
-                model_ms = int(model_ms or 0)
+                model_ms = max(0, int(model_ms or 0))
             elif len(rec) == 9:
                 sid, date_str, iso_str, inp, cr, out, tot, model, credit = rec[:9]
                 credit = float(credit or 0.0)
                 model_ms = 0
-            else:
+            elif len(rec) == 8:
                 sid, date_str, iso_str, inp, cr, out, tot, model = rec[:8]
+                credit = 0.0
+                model_ms = 0
+            else:
+                sid, date_str, iso_str, inp, cr, out, tot = rec[:7]
+                model = UNKNOWN_MODEL
                 credit = 0.0
                 model_ms = 0
 

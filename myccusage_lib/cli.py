@@ -152,25 +152,6 @@ def render_daily_table(data):
     """渲染每日账本模式的终端表格"""
     # 动态获取终端宽度，预设后备大小为 (118列, 24行)
     term_width = shutil.get_terminal_size((118, 24)).columns
-    
-    # 预设各个数据列的固定宽度
-    w_rank = 5
-    w_time = 13
-    w_total = 8
-    w_input = 8
-    w_output = 8
-    w_cache = 8
-    w_hit = 7
-    w_cost = 11
-    
-    # 计算非标题列的总宽度（包含列之间的分隔符宽度等预估常数 24）
-    fixed_width = w_rank + w_time + w_total + w_input + w_output + w_cache + w_hit + w_cost + 24
-    
-    # 将剩余空间全部分配给会话标题列，并保证最小宽度为 24
-    w_title = max(24, term_width - fixed_width)
-    
-    # 确定整个表格的最终总宽度，避免超出终端边界
-    total_table_width = min(term_width, fixed_width + w_title)
 
     display_name = data["displayName"]
     sort_by_tokens = data["sortByTokens"]

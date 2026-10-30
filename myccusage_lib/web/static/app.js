@@ -415,6 +415,18 @@
     return String(n);
   }
 
+  function formatMsDuration(ms) {
+    if (!ms || ms <= 0) return '0s';
+    const sec = ms / 1000;
+    if (sec < 60) return `${sec.toFixed(1)}s`;
+    const min = Math.floor(sec / 60);
+    const remSec = Math.round(sec % 60);
+    if (min < 60) return `${min}m ${remSec}s`;
+    const hr = Math.floor(min / 60);
+    const remMin = min % 60;
+    return `${hr}h ${remMin}m`;
+  }
+
   function calcHitRateStr(cache, inp) {
     const denom = (cache || 0) + (inp || 0);
     if (denom <= 0) return '0.0%';
@@ -3371,7 +3383,17 @@
         const m = list[i];
         let e = map.get(m.model);
         if (!e) {
-          e = { model: m.model, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, agents: {} };
+          e = {
+            model: m.model,
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            calls: 0,
+            credit: 0.0,
+            modelMs: 0,
+            agents: {}
+          };
           map.set(m.model, e);
         }
         e.inputTokens += m.inputTokens || 0;
@@ -3379,13 +3401,25 @@
         e.outputTokens += m.outputTokens || 0;
         e.totalTokens += m.totalTokens || 0;
         e.calls += m.calls || 0;
+        if (m.credit) {
+          e.credit = Math.round(((e.credit || 0) + Number(m.credit)) * 10000) / 10000;
+        }
+        if (m.modelMs) {
+          e.modelMs = (e.modelMs || 0) + Number(m.modelMs);
+        }
         const ags = m.agents;
         if (ags) {
           for (const aid in ags) {
             const src = ags[aid];
-            const dst = e.agents[aid] || (e.agents[aid] = { totalTokens: 0, calls: 0 });
+            const dst = e.agents[aid] || (e.agents[aid] = { totalTokens: 0, calls: 0, credit: 0.0, modelMs: 0 });
             dst.totalTokens += src.totalTokens || 0;
             dst.calls += src.calls || 0;
+            if (src.credit) {
+              dst.credit = Math.round(((dst.credit || 0) + Number(src.credit)) * 10000) / 10000;
+            }
+            if (src.modelMs) {
+              dst.modelMs = (dst.modelMs || 0) + Number(src.modelMs);
+            }
           }
         }
       }
@@ -3451,6 +3485,7 @@
 
     // 逐模型计价 + 汇总
     let totalTokens = 0, totalCalls = 0, totalCostCny = 0, missingRate = 0;
+    let totalModelMs = 0, totalOutputTokens = 0;
     rows.forEach(r => {
       r.rate = isUnit ? findRateForModel(r.model) : basisModel;
       if (r.rate) {
@@ -3464,6 +3499,8 @@
       }
       totalTokens += r.totalTokens;
       totalCalls += r.calls;
+      totalModelMs += (r.modelMs || 0);
+      totalOutputTokens += (r.outputTokens || 0);
     });
 
     // 占比基数：Token 或 费用
@@ -3472,7 +3509,7 @@
     const basisTotal = useCost ? totalCostCny : totalTokens;
     const pctOf = (r) => (basisTotal > 0 ? (basisOf(r) / basisTotal) * 100 : 0);
 
-    renderModelSummaryBar(range, rows.length, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost);
+    renderModelSummaryBar(range, rows.length, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost, totalModelMs, totalOutputTokens);
     renderModelShareChart(rows, pctOf, basisOf, basisTotal, useCost, missingRate);
     renderModelTable(rows, pctOf, isUnit);
 
@@ -3484,10 +3521,14 @@
     }
   }
 
-  function renderModelSummaryBar(range, modelCount, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost) {
+  function renderModelSummaryBar(range, modelCount, totalTokens, totalCalls, totalCostCny, missingRate, isUnit, basisModel, useCost, totalModelMs, totalOutputTokens) {
     const pricingNote = isUnit
       ? `按模型单价计价（费率表${missingRate ? `，其中 ${missingRate} 个模型未配置费率` : ''}）`
       : `等效计价 · 统一按「${escapeHtml(basisModel.name)}」折算`;
+
+    const tpsMeta = (totalModelMs > 0 && totalOutputTokens > 0)
+      ? `<span>⚡ 纯耗时 ${formatMsDuration(totalModelMs)} · 均速 ${Math.round(totalOutputTokens / (totalModelMs / 1000))} tok/s</span>`
+      : '';
 
     el.modelSummaryBar.innerHTML = `
       <div class="models-summary-item">
@@ -3509,6 +3550,7 @@
       <div class="models-summary-meta">
         <span>📅 实际区间 ${escapeHtml(range.start)} ~ ${escapeHtml(range.end)}</span>
         <span>${pricingNote}</span>
+        ${tpsMeta}
         <span>占比按 ${useCost ? '费用' : 'Token'} 归一</span>
       </div>
     `;
@@ -3750,7 +3792,7 @@
         ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
         : '';
       const tpsTip = (r.modelMs > 0 && r.outputTokens > 0)
-        ? ` title="纯推理耗时: ${(r.modelMs / 1000).toFixed(1)}s, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
+        ? ` title="纯推理耗时: ${formatMsDuration(r.modelMs)}, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
         : '';
       rowsHtml += `
         <tr>
@@ -3843,7 +3885,7 @@
             ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
             : '';
           const tpsTip = (r.modelMs > 0 && r.outputTokens > 0)
-            ? ` title="纯推理耗时: ${(r.modelMs / 1000).toFixed(1)}s, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
+            ? ` title="纯推理耗时: ${formatMsDuration(r.modelMs)}, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
             : '';
           tableRows += `
             <tr>

@@ -172,14 +172,15 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                     records = []
                     sid = os.path.basename(fpath).replace(".jsonl", "")
                     anchor_ts: int | None = None
-                    pending_tool_ts: int | None = None
+                    next_anchor: int | None = None
+                    active_call_ids: set[str] = set()
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             for line in f:
                                 # 极速字符串预过滤：跳过不含关键事件标记的绝大多数无关行
                                 if not line.strip() or (
                                     "user" not in line
-                                    and "function_call_result" not in line
+                                    and "function_call" not in line
                                     and "usage" not in line
                                     and "rawUsage" not in line
                                 ):
@@ -206,22 +207,32 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                 # 1) 用户 Prompt 输入：重置并设立新一轮模型推理的绝对时间锚点
                                 if (t == "message" and role == "user") or t == "user":
                                     anchor_ts = ts
-                                    pending_tool_ts = None
+                                    next_anchor = None
+                                    active_call_ids.clear()
                                     continue
 
-                                # 2) 工具执行完成：作为下一轮模型推理的时间锚点
+                                # 2) 跟踪当前轮次模型发起的工具调用 ID
+                                if t == "function_call":
+                                    cid = obj.get("callId")
+                                    if cid:
+                                        active_call_ids.add(cid)
+
+                                # 3) 工具执行完成：作为下一轮模型推理的时间锚点
                                 if t == "function_call_result":
-                                    if anchor_ts is None:
-                                        anchor_ts = ts
+                                    cid = obj.get("callId")
+                                    if (cid and cid in active_call_ids) or (not cid and active_call_ids):
+                                        # 本轮模型推理流式输出过程中提前完成的并发工具（如极速文件读取），
+                                        # 归属于下一轮的起点，避免污染本轮尚在进行的生成时间
+                                        next_anchor = max(next_anchor or 0, ts)
                                     else:
-                                        # 并发 tool call 或生成期间完成的工具，保留最新时间戳防竞态覆盖
-                                        pending_tool_ts = max(pending_tool_ts or 0, ts)
+                                        # 上一轮工具调用批次正常执行完成，以最晚完成的工具时间作为下一轮起点
+                                        anchor_ts = max(anchor_ts or 0, ts)
                                     continue
 
                                 if not ru and not u:
                                     continue
 
-                                # 3) 模型生成完成：计算纯推理净耗时 (毫秒)
+                                # 4) 模型生成完成：计算纯推理净耗时 (毫秒)
                                 model_ms = 0
                                 if anchor_ts is not None and ts >= anchor_ts:
                                     delta = ts - anchor_ts
@@ -229,9 +240,10 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                     if delta >= 100:
                                         model_ms = delta
 
-                                # 轮次交接：若此前有并发工具结束，将最新完成时间作为下轮生成的起点
-                                anchor_ts = pending_tool_ts
-                                pending_tool_ts = None
+                                # 轮次交接：重置当前轮次工具 ID，并承接本轮生成的工具完成起点
+                                anchor_ts = next_anchor
+                                next_anchor = None
+                                active_call_ids.clear()
 
                                 date_str = ms_to_date_str(ts)
                                 iso_str = ms_to_iso(ts)
