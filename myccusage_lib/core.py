@@ -216,6 +216,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
     grand_output = 0
     grand_cost = 0.0
     grand_credit = 0.0
+    grand_model_ms = 0
     total_records = 0
 
     daily_trend = []
@@ -242,6 +243,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                 "outputTokens": 0,
                 "costCny": 0.0,
                 "credit": 0.0,
+                "modelMs": 0,
                 "count": 0,
                 "days": []
             }
@@ -255,6 +257,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
         day_output = 0
         day_cost = 0.0
         day_credit = 0.0
+        day_model_ms = 0
         day_records = []
 
         for s in s_list:
@@ -264,6 +267,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             out = max(0, tot - (inp + ca))
             cost = calc_deepseek_cost(inp, ca, out)
             credit = float(s.get("credit", 0.0) or 0.0)
+            m_ms = int(s.get("modelMs", 0) or 0)
 
             if not summary_only:
                 sid = s.get("sessionId", "")
@@ -287,6 +291,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                     "costCnyRaw": cost,
                     "credit": round(credit, 2),
                     "creditRaw": credit,
+                    "modelMs": m_ms,
                     "modelName": extract_main_model(s.get("models", {})),
                     "models": s.get("models", {}),
                     "remoteDevice": s.get("remoteDevice", ""),
@@ -302,6 +307,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             day_output += out
             day_cost += cost
             day_credit += credit
+            day_model_ms += m_ms
 
         record_cnt = len(s_list) if summary_only else len(day_records)
 
@@ -317,6 +323,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
                 "costCny": round(day_cost, 2),
                 "credit": round(day_credit, 2),
                 "creditRaw": day_credit,
+                "modelMs": day_model_ms,
                 "records": day_records,
                 "count": record_cnt
             }
@@ -327,6 +334,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             weeks_dict[week_key]["outputTokens"] += day_output
             weeks_dict[week_key]["costCny"] += day_cost
             weeks_dict[week_key]["credit"] = weeks_dict[week_key].get("credit", 0.0) + day_credit
+            weeks_dict[week_key]["modelMs"] = weeks_dict[week_key].get("modelMs", 0) + day_model_ms
             weeks_dict[week_key]["count"] += record_cnt
 
         daily_trend.append({
@@ -338,6 +346,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             "outputTokens": day_output,
             "costCny": round(day_cost, 2),
             "credit": round(day_credit, 2),
+            "modelMs": day_model_ms,
             "count": record_cnt
         })
 
@@ -347,6 +356,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
         grand_output += day_output
         grand_cost += day_cost
         grand_credit += day_credit
+        grand_model_ms += day_model_ms
         total_records += record_cnt
 
     # 格式化周小计的 costCny 与 credit
@@ -377,6 +387,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             "outputTokens": today_entry["outputTokens"],
             "costCny": today_entry["costCny"],
             "credit": today_entry.get("credit", 0.0),
+            "modelMs": today_entry.get("modelMs", 0),
             "cacheHitRate": round(t_ca / max(1, t_inp + t_ca) * 100, 1),
             "sessionCount": today_entry.get("count", 0)
         }
@@ -390,6 +401,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             "outputTokens": 0,
             "costCny": 0.0,
             "credit": 0.0,
+            "modelMs": 0,
             "cacheHitRate": 0.0,
             "sessionCount": 0
         }
@@ -409,6 +421,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
             "costCny": round(grand_cost, 2),
             "costUsd": round(grand_cost / USD_CNY_RATE, 2),
             "credit": round(grand_credit, 2),
+            "modelMs": grand_model_ms,
             "cacheHitRate": hit_rate
         },
         "today": today_dict,
@@ -456,6 +469,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
     grand_output = 0
     grand_cost = 0.0
     grand_credit = 0.0
+    grand_model_ms = 0
 
     for s in raw_sessions:
         sid = s.get("sessionId", "")
@@ -469,6 +483,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
         out = max(0, tot - (inp + ca))
         cost = calc_deepseek_cost(inp, ca, out)
         credit = float(s.get("credit", 0.0) or 0.0)
+        m_ms = int(s.get("modelMs", 0) or 0)
         title = s.get("title") or resolve_title(sid, titles)
 
         grand_total += tot
@@ -477,6 +492,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
         grand_output += out
         grand_cost += cost
         grand_credit += credit
+        grand_model_ms += m_ms
 
         sessions.append({
             "sessionId": sid,
@@ -491,6 +507,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
             "costCnyRaw": cost,
             "credit": round(credit, 2),
             "creditRaw": credit,
+            "modelMs": m_ms,
             "modelName": extract_main_model(s.get("models", {})),
             "models": s.get("models", {}),
             "remoteDevice": s.get("remoteDevice", ""),
@@ -535,6 +552,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
                     "outputTokens": 0,
                     "costCny": 0.0,
                     "credit": 0.0,
+                    "modelMs": 0,
                     "count": 0,
                     "days_map": OrderedDict()
                 }
@@ -550,6 +568,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
                     "outputTokens": 0,
                     "costCny": 0.0,
                     "credit": 0.0,
+                    "modelMs": 0,
                     "records": []
                 }
             d_entry = w_entry["days_map"][day_key]
@@ -560,6 +579,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
             d_entry["outputTokens"] += s["outputTokens"]
             d_entry["costCny"] += s["costCnyRaw"]
             d_entry["credit"] += s.get("creditRaw", 0.0)
+            d_entry["modelMs"] += s.get("modelMs", 0)
 
             w_entry["totalTokens"] += s["totalTokens"]
             w_entry["inputTokens"] += s["inputTokens"]
@@ -567,6 +587,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
             w_entry["outputTokens"] += s["outputTokens"]
             w_entry["costCny"] += s["costCnyRaw"]
             w_entry["credit"] += s.get("creditRaw", 0.0)
+            w_entry["modelMs"] += s.get("modelMs", 0)
             w_entry["count"] += 1
 
         weeks = []
@@ -585,6 +606,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
                 "outputTokens": w_v["outputTokens"],
                 "costCny": round(w_v["costCny"], 2),
                 "credit": round(w_v.get("credit", 0.0), 2),
+                "modelMs": w_v.get("modelMs", 0),
                 "count": w_v["count"],
                 "days": days_list
             })
@@ -605,6 +627,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
             "costCny": round(grand_cost, 2),
             "costUsd": round(grand_cost / USD_CNY_RATE, 2),
             "credit": round(grand_credit, 2),
+            "modelMs": grand_model_ms,
             "cacheHitRate": hit_rate
         },
         "weeks": weeks,
@@ -643,6 +666,7 @@ def get_all_agents_summary(force_refresh=False):
                 "costCny": sum_info.get("costCny", 0.0),
                 "costUsd": sum_info.get("costUsd", 0.0),
                 "credit": sum_info.get("credit", 0.0),
+                "modelMs": sum_info.get("modelMs", 0),
                 "recordsCount": rec_cnt,
                 "cacheHitRate": sum_info.get("cacheHitRate", 0.0),
                 "dailyTrend": daily_trend
@@ -659,6 +683,7 @@ def get_all_agents_summary(force_refresh=False):
                 "costCny": 0.0,
                 "costUsd": 0.0,
                 "credit": 0.0,
+                "modelMs": 0,
                 "recordsCount": 0,
                 "cacheHitRate": 0.0,
                 "dailyTrend": []
@@ -1065,6 +1090,7 @@ def get_model_breakdown(agent_type=None):
                 "inputTokens": 0, "cacheReadTokens": 0,
                 "outputTokens": 0, "totalTokens": 0, "calls": 0,
                 "credit": 0.0,
+                "modelMs": 0,
             }
         e["inputTokens"] += mv.get("inputTokens", 0)
         e["cacheReadTokens"] += mv.get("cacheReadTokens", 0)
@@ -1073,6 +1099,8 @@ def get_model_breakdown(agent_type=None):
         e["calls"] += mv.get("calls", 0)
         if "credit" in mv:
             e["credit"] = round(e.get("credit", 0.0) + float(mv["credit"] or 0.0), 4)
+        if "modelMs" in mv:
+            e["modelMs"] = e.get("modelMs", 0) + int(mv["modelMs"] or 0)
         return e
 
     def _bump_agent(entry: dict, aid: str, mv: dict) -> None:
@@ -1080,11 +1108,13 @@ def get_model_breakdown(agent_type=None):
         agents = entry.setdefault("agents", {})
         ag = agents.get(aid)
         if ag is None:
-            ag = agents[aid] = {"totalTokens": 0, "calls": 0, "credit": 0.0}
+            ag = agents[aid] = {"totalTokens": 0, "calls": 0, "credit": 0.0, "modelMs": 0}
         ag["totalTokens"] += mv.get("totalTokens", 0)
         ag["calls"] += mv.get("calls", 0)
         if "credit" in mv:
             ag["credit"] = round(ag.get("credit", 0.0) + float(mv["credit"] or 0.0), 4)
+        if "modelMs" in mv:
+            ag["modelMs"] = ag.get("modelMs", 0) + int(mv["modelMs"] or 0)
 
     def _record(aid: str, d_str: str, mname: str, mv: dict) -> None:
         """把单个模型的用量同时记入 全局 / 按 Agent / 按日期 三个视图。"""
@@ -1136,6 +1166,7 @@ def get_model_breakdown(agent_type=None):
                             "totalTokens": tot,
                             "calls": 0,  # 分片不含调用次数信息，不虚构
                             "credit": float(rs.get("credit", 0.0) or 0.0),
+                            "modelMs": int(rs.get("modelMs", 0) or 0),
                         })
 
     def _sorted(container: dict) -> list[dict]:
@@ -1150,8 +1181,10 @@ def get_model_breakdown(agent_type=None):
         "totals": {
             "models": len(models),
             "totalTokens": sum(x["totalTokens"] for x in models),
+            "outputTokens": sum(x.get("outputTokens", 0) for x in models),
             "credit": round(sum(x.get("credit", 0.0) for x in models), 2),
             "calls": sum(x["calls"] for x in models),
+            "modelMs": sum(x.get("modelMs", 0) for x in models),
             "unknownTokens": unknown.get("totalTokens", 0),
             "unknownCalls": unknown.get("calls", 0),
         },

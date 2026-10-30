@@ -171,23 +171,67 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                 else:
                     records = []
                     sid = os.path.basename(fpath).replace(".jsonl", "")
+                    anchor_ts: int | None = None
+                    pending_tool_ts: int | None = None
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             for line in f:
-                                if not line.strip() or ("usage" not in line and "rawUsage" not in line):
+                                # 极速字符串预过滤：跳过不含关键事件标记的绝大多数无关行
+                                if not line.strip() or (
+                                    "user" not in line
+                                    and "function_call_result" not in line
+                                    and "usage" not in line
+                                    and "rawUsage" not in line
+                                ):
                                     continue
                                 try:
                                     obj = json.loads(line)
                                 except Exception:
                                     continue
-                                pd = obj.get("providerData") or {}
-                                ru = pd.get("rawUsage")
-                                u = pd.get("usage")
-                                if not ru and not u:
-                                    continue
+
+                                t = obj.get("type")
+                                role = obj.get("role")
                                 ts = obj.get("timestamp")
                                 if not ts:
                                     continue
+
+                                pd = obj.get("providerData") or {}
+                                ru = pd.get("rawUsage")
+                                u = pd.get("usage")
+                                if not u:
+                                    msg = obj.get("message")
+                                    if isinstance(msg, dict):
+                                        u = msg.get("usage")
+
+                                # 1) 用户 Prompt 输入：重置并设立新一轮模型推理的绝对时间锚点
+                                if (t == "message" and role == "user") or t == "user":
+                                    anchor_ts = ts
+                                    pending_tool_ts = None
+                                    continue
+
+                                # 2) 工具执行完成：作为下一轮模型推理的时间锚点
+                                if t == "function_call_result":
+                                    if anchor_ts is None:
+                                        anchor_ts = ts
+                                    else:
+                                        # 并发 tool call 或生成期间完成的工具，保留最新时间戳防竞态覆盖
+                                        pending_tool_ts = max(pending_tool_ts or 0, ts)
+                                    continue
+
+                                if not ru and not u:
+                                    continue
+
+                                # 3) 模型生成完成：计算纯推理净耗时 (毫秒)
+                                model_ms = 0
+                                if anchor_ts is not None and ts >= anchor_ts:
+                                    delta = ts - anchor_ts
+                                    # 防并发竞态：过滤并行 tool call 或极速回显引起的 <100ms 异常尖峰
+                                    if delta >= 100:
+                                        model_ms = delta
+
+                                # 轮次交接：若此前有并发工具结束，将最新完成时间作为下轮生成的起点
+                                anchor_ts = pending_tool_ts
+                                pending_tool_ts = None
 
                                 date_str = ms_to_date_str(ts)
                                 iso_str = ms_to_iso(ts)
@@ -217,7 +261,7 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                                         out = u.get("outputTokens", 0)
                                 tot = hit + miss + out
                                 model = normalize_model_name(pd.get("requestModelName") or pd.get("requestModelId") or pd.get("model"))
-                                records.append((sid, date_str, iso_str, miss, hit, out, tot, model, credit))
+                                records.append((sid, date_str, iso_str, miss, hit, out, tot, model, credit, model_ms))
                     except Exception:
                         records = cached[2] if cached else []
                     else:

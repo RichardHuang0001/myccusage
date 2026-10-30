@@ -3587,6 +3587,10 @@
         ? `<span class="rate-triple" title="计价依据：${escapeHtml(r.rate.name)}">${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.inputRate)} / ${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.cacheRate)} / ${r.rate.currency === 'USD' ? '$' : '¥'}${formatRate(r.rate.outputRate)}</span>`
         : '<span class="cell-muted">—</span>';
 
+      const tpsStr = (r.modelMs > 0 && r.outputTokens > 0)
+        ? ` · ⚡ ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s`
+        : '';
+
       return `
         <tr class="${isUnknown ? 'row-unknown-model' : ''}">
           <td class="col-rank">${idx + 1}</td>
@@ -3596,7 +3600,7 @@
           </td>
           <td class="col-tokens">
             <div class="tok-main">${formatTokens(r.totalTokens)}</div>
-            <div class="tok-split">入 ${formatTokens(r.inputTokens)} · 缓 ${formatTokens(r.cacheReadTokens)} · 出 ${formatTokens(r.outputTokens)}</div>
+            <div class="tok-split">入 ${formatTokens(r.inputTokens)} · 缓 ${formatTokens(r.cacheReadTokens)} · 出 ${formatTokens(r.outputTokens)}${tpsStr}</div>
           </td>
           <td class="col-share">
             <div class="share-cell">
@@ -3745,13 +3749,16 @@
       const creditHtml = isWorkbuddy
         ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
         : '';
+      const tpsTip = (r.modelMs > 0 && r.outputTokens > 0)
+        ? ` title="纯推理耗时: ${(r.modelMs / 1000).toFixed(1)}s, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
+        : '';
       rowsHtml += `
         <tr>
           <td class="col-rank">${idx + 1}</td>
           <td class="col-time">${r.time || r.date || '--'}</td>
           <td class="col-tokens">${formatTokens(r.totalTokens)}</td>
           <td class="col-input">${formatTokens(r.inputTokens)}</td>
-          <td class="col-output">${formatTokens(r.outputTokens)}</td>
+          <td class="col-output"${tpsTip}>${formatTokens(r.outputTokens)}</td>
           <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
           <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
           <td class="col-task-model">${formatTaskModelBadge(r)}</td>
@@ -3835,13 +3842,16 @@
           const creditHtml = isWorkbuddy
             ? `<td class="col-credit">${(r.creditRaw !== undefined ? r.creditRaw : (r.credit || 0)).toFixed(2)}</td>`
             : '';
+          const tpsTip = (r.modelMs > 0 && r.outputTokens > 0)
+            ? ` title="纯推理耗时: ${(r.modelMs / 1000).toFixed(1)}s, 速率: ${Math.round(r.outputTokens / (r.modelMs / 1000))} tok/s"`
+            : '';
           tableRows += `
             <tr>
               <td class="col-rank">${r.index}</td>
               <td class="col-time">${r.time}</td>
               <td class="col-tokens">${formatTokens(r.totalTokens)}</td>
               <td class="col-input">${formatTokens(r.inputTokens)}</td>
-              <td class="col-output">${formatTokens(r.outputTokens)}</td>
+              <td class="col-output"${tpsTip}>${formatTokens(r.outputTokens)}</td>
               <td class="col-cache">${formatTokens(r.cacheTokens)}</td>
               <td class="col-hitrate">${calcHitRateStr(r.cacheTokens, r.inputTokens)}</td>
               <td class="col-task-model">${formatTaskModelBadge(r)}</td>

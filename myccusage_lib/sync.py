@@ -272,6 +272,10 @@ def _make_local_entry(s: dict[str, Any], device_id: str) -> dict[str, Any]:
     credit = float(s.get("credit", 0.0) or s.get("creditRaw", 0.0) or 0.0)
     if credit > 0:
         entry["credit"] = round(credit, 4)
+    # 模型纯推理净耗时 (ms) 透传
+    model_ms = int(s.get("modelMs", 0) or 0)
+    if model_ms > 0:
+        entry["modelMs"] = model_ms
     # 模型子结构透传 (支持全模型多维统计跨端聚合)
     models = s.get("models")
     if models and isinstance(models, dict):

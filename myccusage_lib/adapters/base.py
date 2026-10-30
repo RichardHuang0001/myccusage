@@ -19,9 +19,9 @@ _CANDIDATE_HOME_DIRS: list[str] | None = None
 # 模型维度：未识别到模型时使用的占位名（统一用字符串，避免 None 作为字典键带来的歧义）
 UNKNOWN_MODEL = "unknown"
 
-# 文件级持久缓存的 schema 版本。records 由 8 元组扩展为 9 元组（末尾追加 credit），
-# 旧缓存必须失效，否则会混入缺少 credit 的旧数据。版本不匹配时整体丢弃并重建一次。
-_FILE_CACHE_SCHEMA = 3
+# 文件级持久缓存的 schema 版本。records 由 9 元组扩展为 10 元组（末尾追加 model_ms），
+# 旧缓存必须失效，否则会混入缺少 model_ms 的旧数据。版本不匹配时整体丢弃并重建一次。
+_FILE_CACHE_SCHEMA = 4
 
 # 非真实模型的伪名（大小写不敏感），统一归入 UNKNOWN_MODEL
 _PSEUDO_MODELS = frozenset({"<synthetic>", "synthetic", "none", "null", "unknown", ""})
@@ -152,9 +152,9 @@ class BaseAgentAdapter:
             self._full_cache = (fingerprint, (daily_map, session_list))
 
     @staticmethod
-    def _bump_model(models: dict, model: str, inp: int, cr: int, out: int, tot: int, credit: float = 0.0) -> None:
+    def _bump_model(models: dict, model: str, inp: int, cr: int, out: int, tot: int, credit: float = 0.0, model_ms: int = 0) -> None:
         """
-        模型维度累加（含调用次数）。
+        模型维度累加（含调用次数与模型推理耗时毫秒）。
 
         calls 的语义：一条 record 记一次调用。各适配器的 record 粒度本就是"一次模型交互"
         （agy 的 step_type=15 轮次、claude 的 assistant 消息已按 message.id 幂等去重、
@@ -168,6 +168,7 @@ class BaseAgentAdapter:
                 "inputTokens": 0, "cacheReadTokens": 0,
                 "outputTokens": 0, "totalTokens": 0, "calls": 0,
                 "credit": 0.0,
+                "modelMs": 0,
             }
         m["inputTokens"] += inp
         m["cacheReadTokens"] += cr
@@ -176,19 +177,21 @@ class BaseAgentAdapter:
         m["calls"] += 1
         if credit:
             m["credit"] = round(m.get("credit", 0.0) + credit, 4)
+        if model_ms:
+            m["modelMs"] = m.get("modelMs", 0) + int(model_ms)
 
     @staticmethod
     def _accumulate_records(records) -> tuple[dict[str, list[dict]], list[dict]]:
         """
         把记录流聚合为 (daily_map, session_list)：
-        - records 元素支持 8 元组或 9 元组 (兼容 WorkBuddy credit 字段):
-          (sessionId, 日期, ISO时间, 输入Token, 缓存读Token, 输出Token, 合计Token, 模型名, [credit])
+        - records 元素支持 8 元组、9 元组或 10 元组 (兼容 WorkBuddy credit 与 model_ms 字段):
+          (sessionId, 日期, ISO时间, 输入Token, 缓存读Token, 输出Token, 合计Token, 模型名, [credit], [model_ms])
           第 8 位模型名一律经 normalize_model_name() 归一化，未识别时用 UNKNOWN_MODEL。
         - daily_map: { "YYYY-MM-DD": [ 当日会话切片, ... ] }，同日同会话自动合并累加
         - session_list: 每个会话的全生命周期累计
 
         除既有度量字段外，两类条目都额外携带 models 子结构（纯新增，既有字段一字不改）：
-          models = { 模型名: {inputTokens, cacheReadTokens, outputTokens, totalTokens, calls, credit} }
+          models = { 模型名: {inputTokens, cacheReadTokens, outputTokens, totalTokens, calls, credit, modelMs} }
 
         不变式（务必守恒，改造后须逐条验证）：
           sum(models[m]["totalTokens"] for m in models) == totalTokens
@@ -205,12 +208,18 @@ class BaseAgentAdapter:
         bump = BaseAgentAdapter._bump_model
 
         for rec in records:
-            if len(rec) >= 9:
+            if len(rec) >= 10:
+                sid, date_str, iso_str, inp, cr, out, tot, model, credit, model_ms = rec[:10]
+                credit = float(credit or 0.0)
+                model_ms = int(model_ms or 0)
+            elif len(rec) == 9:
                 sid, date_str, iso_str, inp, cr, out, tot, model, credit = rec[:9]
                 credit = float(credit or 0.0)
+                model_ms = 0
             else:
                 sid, date_str, iso_str, inp, cr, out, tot, model = rec[:8]
                 credit = 0.0
+                model_ms = 0
 
             # 1) 每日切片累加
             day = daily.get(date_str)
@@ -226,6 +235,7 @@ class BaseAgentAdapter:
                     "outputTokens": 0,
                     "totalTokens": 0,
                     "credit": 0.0,
+                    "modelMs": 0,
                     "lastActivity": iso_str,
                     "models": {},
                 }
@@ -235,9 +245,11 @@ class BaseAgentAdapter:
             ds["totalTokens"] += tot
             if credit:
                 ds["credit"] = round(ds.get("credit", 0.0) + credit, 4)
+            if model_ms:
+                ds["modelMs"] = ds.get("modelMs", 0) + model_ms
             if iso_str > ds["lastActivity"]:
                 ds["lastActivity"] = iso_str
-            bump(ds["models"], model, inp, cr, out, tot, credit)
+            bump(ds["models"], model, inp, cr, out, tot, credit, model_ms)
 
             # 2) 会话全生命周期累加
             ss = sessions.get(sid)
@@ -249,6 +261,7 @@ class BaseAgentAdapter:
                     "outputTokens": 0,
                     "totalTokens": 0,
                     "credit": 0.0,
+                    "modelMs": 0,
                     "lastActivity": iso_str,
                     "models": {},
                 }
@@ -258,9 +271,11 @@ class BaseAgentAdapter:
             ss["totalTokens"] += tot
             if credit:
                 ss["credit"] = round(ss.get("credit", 0.0) + credit, 4)
+            if model_ms:
+                ss["modelMs"] = ss.get("modelMs", 0) + model_ms
             if iso_str > ss["lastActivity"]:
                 ss["lastActivity"] = iso_str
-            bump(ss["models"], model, inp, cr, out, tot, credit)
+            bump(ss["models"], model, inp, cr, out, tot, credit, model_ms)
 
         return ({d: list(day.values()) for d, day in daily.items()}, list(sessions.values()))
 
