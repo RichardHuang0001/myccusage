@@ -686,14 +686,14 @@ struct AgentRowView: View {
                             .cornerRadius(4)
                     }
                     
-                    // 积分消耗胶囊徽标 (如 WorkBuddy 消耗)
+                    // 积分消耗胶囊徽标 (如 WorkBuddy 消耗，使用中性微底衬与锐利系统字体，彻底消除背景光晕干扰)
                     if let credit = agent.credit, credit > 0 {
                         Text(formatCredit(credit))
-                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                            .foregroundColor(Color(red: 0.96, green: 0.55, blue: 0.15))
-                            .padding(.horizontal, 4)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.orange)
+                            .padding(.horizontal, 4.5)
                             .padding(.vertical, 1)
-                            .background(Color(red: 0.96, green: 0.55, blue: 0.15).opacity(0.12))
+                            .background(Color.primary.opacity(0.06))
                             .cornerRadius(4)
                     }
                 }
