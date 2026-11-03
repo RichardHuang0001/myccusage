@@ -11,6 +11,7 @@ struct AgentUsage: Codable, Identifiable, Equatable {
     var hitRate: Double
     var costCny: Double
     var sessionCount: Int
+    var credit: Double?
 }
 
 struct TodaySummary: Codable, Equatable {
@@ -46,6 +47,16 @@ struct TodaySummary: Codable, Equatable {
 }
 
 // MARK: - 通用短格式 Token 格式化（两位数只显示小数点后1位，3位数及以上不显示小数点后数字）
+func formatCredit(_ credit: Double) -> String {
+    if credit >= 100 {
+        return String(format: "%.1f 积分", credit)
+    } else if credit.truncatingRemainder(dividingBy: 1) == 0 {
+        return String(format: "%.0f 积分", credit)
+    } else {
+        return String(format: "%.2f 积分", credit)
+    }
+}
+
 func formatTokensShort(_ n: Int, fallback: String = "") -> String {
     guard n > 0 else { return fallback.isEmpty ? "0" : fallback }
     let val: Double
@@ -672,6 +683,17 @@ struct AgentRowView: View {
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
                             .background(Color.primary.opacity(0.06))
+                            .cornerRadius(4)
+                    }
+                    
+                    // 积分消耗胶囊徽标 (如 WorkBuddy 消耗)
+                    if let credit = agent.credit, credit > 0 {
+                        Text(formatCredit(credit))
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(red: 0.96, green: 0.55, blue: 0.15))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color(red: 0.96, green: 0.55, blue: 0.15).opacity(0.12))
                             .cornerRadius(4)
                     }
                 }
