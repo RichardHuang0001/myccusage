@@ -225,3 +225,64 @@ def test_workbuddy_state_machine_parallel_tools():
         assert records[1] == 1500
         # Turn 3: 2000ms (idle time excluded)
         assert records[2] == 2000
+
+
+def test_workbuddy_cross_account_session_dedup(monkeypatch):
+    """
+    测试 WorkBuddy 跨账号延续会话的精准识别与去重合并：
+    - 会话 A 与会话 B 在相同项目且相同标题
+    - 会话 B 复制了会话 A 的前序调用 (时间戳完全一致) 并追加了新调用
+    - 验证合并后会话数缩减为 1，且重叠调用的 Token/Credit 不会被双倍计算
+    - 验证不同项目或无调用重叠的独立会话绝不误合并
+    """
+    adapter = WorkBuddyAdapter()
+
+    # Mock _get_session_metas
+    mock_metas = {
+        "sid_account1": ("/path/to/project_a", "舆情分析与回测计划"),
+        "sid_account2": ("/path/to/project_a", "舆情分析与回测计划"),
+        "sid_independent": ("/path/to/project_b", "舆情分析与回测计划"),  # 独立项目，同名
+    }
+    monkeypatch.setattr(adapter, "_get_session_metas", lambda: mock_metas)
+
+    # 构造原始 records: (sid, date_str, iso_str, miss, hit, out, tot, model, credit, model_ms)
+    call_1 = ("sid_account1", "2026-10-20", "2026-10-20T10:00:00.000000Z", 100, 50, 20, 170, "deepseek-v4.1-flash", 0.5, 500)
+    call_2 = ("sid_account1", "2026-10-20", "2026-10-20T10:05:00.000000Z", 200, 100, 40, 340, "deepseek-v4.1-flash", 1.0, 600)
+
+    # Account 2 复制了 call_1 和 call_2，并追加了 call_3
+    call_1_cloned = ("sid_account2", "2026-10-20", "2026-10-20T10:00:00.000000Z", 100, 50, 20, 170, "deepseek-v4.1-flash", 0.5, 500)
+    call_2_cloned = ("sid_account2", "2026-10-20", "2026-10-20T10:05:00.000000Z", 200, 100, 40, 340, "deepseek-v4.1-flash", 1.0, 600)
+    call_3_new = ("sid_account2", "2026-10-21", "2026-10-21T09:00:00.000000Z", 300, 150, 60, 510, "deepseek-v4.1-flash", 1.5, 700)
+
+    # 独立会话仅调用 4
+    call_4_indep = ("sid_independent", "2026-10-20", "2026-10-20T10:00:01.000000Z", 50, 25, 10, 85, "deepseek-v4.1-flash", 0.2, 300)
+
+    raw_records = [call_1, call_2, call_1_cloned, call_2_cloned, call_3_new, call_4_indep]
+
+    deduped = adapter._merge_and_dedup_records(raw_records)
+
+    # 去重后应当只剩 4 条记录 (call_1, call_2, call_3_new, call_4_indep)
+    assert len(deduped) == 4
+
+    # 聚合结果
+    daily_map, session_list = adapter._accumulate_records(deduped)
+
+    # 应该只有 2 个 session: sid_account2 (合并了 account1) 和 sid_independent
+    assert len(session_list) == 2
+    sess_map = {s["sessionId"]: s for s in session_list}
+
+    assert "sid_account2" in sess_map
+    assert "sid_independent" in sess_map
+
+    # 验证守恒：account2 合并后的总 tokens = 170 + 340 + 510 = 1020，credit = 0.5 + 1.0 + 1.5 = 3.0
+    s2 = sess_map["sid_account2"]
+    assert s2["totalTokens"] == 1020
+    assert s2["credit"] == 3.0
+    assert s2["modelMs"] == 1800
+    assert s2["lastActivity"] == "2026-10-21T09:00:00.000000Z"
+
+    # 验证每日切片：2026-10-20 只有 call_1 + call_2 + call_4_indep，绝无双倍累加
+    day_20 = {s["sessionId"]: s for s in daily_map["2026-10-20"]}
+    assert day_20["sid_account2"]["totalTokens"] == 510  # 170 + 340
+    assert day_20["sid_account2"]["credit"] == 1.5
+

@@ -92,6 +92,122 @@ class WorkBuddyAdapter(BaseAgentAdapter):
                         pass
         return titles, times
 
+    def _get_session_metas(self) -> dict[str, tuple[str, str]]:
+        """
+        获取各会话的元数据 (cwd, title)，用于精准识别跨账号会话克隆。
+        优先读取 SQLite 数据库 (< 1ms)，若不可用由 get_titles_and_times 兜底。
+        """
+        metas: dict[str, tuple[str, str]] = {}
+        for db in self.db_paths:
+            try:
+                uri = f"file:{db}?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                cur = conn.cursor()
+                for row in cur.execute("SELECT id, cwd, coalesce(custom_title, title) FROM sessions"):
+                    sid, cwd, title = row
+                    metas[sid] = (cwd or "", (title or "").strip())
+                conn.close()
+            except Exception:
+                pass
+
+        if not metas:
+            titles, _ = self.get_titles_and_times()
+            metas = {sid: ("", title) for sid, title in titles.items()}
+        return metas
+
+    def _merge_and_dedup_records(self, all_records: list) -> list:
+        """
+        高性能、零误伤合并通过第三方工具跨账号链接/复制的会话，并消除重复计入的 Token 与积分：
+        1. 候选门禁：属于同一工程目录 (cwd) 且具有相同非空业务标题 (len >= 2)
+        2. 物理铁证：调用时间戳集合具有非空交集（毫秒级 timestamp 相同证明系同一上下文继承克隆）
+        3. 连通分支：采用并查集 (Union-Find) 聚合并选择最新活跃者作为规范会话 ID (canonical_sid)
+        4. 记录去重：按 (canonical_sid, iso_str) 进行单会话内调用级去重，消除历史重合调用的重复累加
+        """
+        if not all_records:
+            return all_records
+
+        metas = self._get_session_metas()
+        if not metas:
+            return all_records
+
+        # 统计每个 sid 的所有调用时间戳集合与最新调用时间
+        sid_calls_map: dict[str, set[str]] = {}
+        sid_last_call: dict[str, str] = {}
+        for rec in all_records:
+            sid = rec[0]
+            iso = rec[2]
+            if sid not in sid_calls_map:
+                sid_calls_map[sid] = set()
+            sid_calls_map[sid].add(iso)
+            if sid not in sid_last_call or iso > sid_last_call[sid]:
+                sid_last_call[sid] = iso
+
+        # 并查集：按 (cwd, title) 候选分组并在存在重叠时间戳时联通
+        parent: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            if parent.setdefault(x, x) != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+
+        def union(x: str, y: str) -> None:
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[rx] = ry
+
+        cand_groups: dict[tuple[str, str], list[str]] = {}
+        for sid in sid_calls_map:
+            m = metas.get(sid)
+            if not m or not m[1] or len(m[1]) < 2:
+                continue
+            cand_groups.setdefault(m, []).append(sid)
+
+        has_link = False
+        for m, sids in cand_groups.items():
+            if len(sids) > 1:
+                for i in range(len(sids)):
+                    for j in range(i + 1, len(sids)):
+                        s1, s2 = sids[i], sids[j]
+                        if sid_calls_map[s1] & sid_calls_map[s2]:
+                            union(s1, s2)
+                            has_link = True
+
+        if not has_link:
+            return all_records
+
+        # 聚合成连通分支，并选举最新活跃者作为 canonical_sid
+        components: dict[str, list[str]] = {}
+        for sid in sid_calls_map:
+            root = find(sid)
+            components.setdefault(root, []).append(sid)
+
+        canonical_map: dict[str, str] = {}
+        for root, members in components.items():
+            if len(members) > 1:
+                canon = max(members, key=lambda s: (sid_last_call.get(s, ""), s))
+                for m in members:
+                    canonical_map[m] = canon
+
+        if not canonical_map:
+            return all_records
+
+        # 单会话内按 (canonical_sid, iso_str) 进行调用级幂等去重
+        seen_calls: set[tuple[str, str]] = set()
+        deduped: list = []
+        for rec in all_records:
+            sid = rec[0]
+            c_sid = canonical_map.get(sid, sid)
+            iso = rec[2]
+            call_key = (c_sid, iso)
+            if call_key in seen_calls:
+                continue
+            seen_calls.add(call_key)
+            if c_sid != sid:
+                rec = (c_sid,) + tuple(rec[1:])
+            deduped.append(rec)
+
+        return deduped
+
     def get_source_fingerprint(self) -> str:
         """极速获取 WorkBuddy 目录修改状态指纹 (< 1ms)"""
         if not self.is_available():
@@ -285,7 +401,8 @@ class WorkBuddyAdapter(BaseAgentAdapter):
             if cache_modified and not today_only:
                 self._save_persisted_file_cache()
 
-        daily_res, session_res = self._accumulate_records(all_records)
+        deduped_records = self._merge_and_dedup_records(all_records)
+        daily_res, session_res = self._accumulate_records(deduped_records)
         self._store_full_result(fp, daily_res, session_res, today_only)
         return daily_res, session_res
 
