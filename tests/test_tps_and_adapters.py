@@ -286,3 +286,189 @@ def test_workbuddy_cross_account_session_dedup(monkeypatch):
     assert day_20["sid_account2"]["totalTokens"] == 510  # 170 + 340
     assert day_20["sid_account2"]["credit"] == 1.5
 
+
+
+def test_dsh_adapter_contract_and_insights(monkeypatch, tmp_path):
+    """
+    DSH 适配器契约验证：
+    1. 从合成的多帧 zstd 会话日志解析出符合 10 元组契约的 records；
+    2. 同一 (turn, step) 的重复结算只取最后一次（对齐 dsh 官方 addReplacing 语义）；
+    3. llm/retry-started 关闭替换槽位后，新 usage 重新累加；
+    4. 缺 data.usage 时回退到 stream 中最后一个 type=="usage" 分片；
+    5. Σmodels.totalTokens 恒等于 totalTokens（I1 守恒）。
+    """
+    import zstandard
+    from myccusage_lib import zstdcodec
+    from myccusage_lib.adapters.dsh import DshAdapter
+
+    if not zstdcodec.available():
+        pytest.skip("当前环境无 Zstandard 解码能力")
+
+    def ev(seq, time_ms, etype, data):
+        return json.dumps({"type": etype, "seq": seq, "time": time_ms, "data": data})
+
+    def usage(inp, cr, out, cw=0):
+        return {
+            "inputTokens": inp, "outputTokens": out,
+            "cacheReadTokens": cr, "cacheWriteTokens": cw,
+            "totalTokens": inp + cr + out + cw,
+        }
+
+    sid = "session-test"
+    session_dir = tmp_path / "sessions" / "--tmp--" / sid
+    session_dir.mkdir(parents=True)
+
+    lines = [
+        json.dumps({"type": "session", "version": 4, "id": sid,
+                    "createdAt": 1700000000000, "cwd": "/tmp/proj",
+                    "isSeeded": False, "delegationDepth": 0}),
+        ev(1, 1700000000000, "session/title", {"title": "测试会话"}),
+        ev(2, 1700000001000, "step/start", {"turn": 1, "step": 1}),
+        # 第一次结算：被同 step 的下一次结算替换掉（不计入）
+        ev(3, 1700000003000, "assistant/message", {
+            "turn": 1, "step": 1,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "deepseek-official",
+                                   "model": "DeepSeek-Flash"}},
+            "usage": usage(100, 900, 10),
+            "stream": [{"type": "chunk", "time": 1700000002000, "chunk": {}},
+                       {"type": "chunk", "time": 1700000003000, "chunk": {}}],
+        }),
+        # 同 (turn, step) 的最终结算：应替换上一条
+        ev(4, 1700000003000, "assistant/message", {
+            "turn": 1, "step": 1,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "deepseek-official",
+                                   "model": "DeepSeek-Flash"}},
+            "usage": usage(200, 800, 20),
+            "stream": [{"type": "chunk", "time": 1700000002000, "chunk": {}},
+                       {"type": "chunk", "time": 1700000003000, "chunk": {}}],
+        }),
+        ev(5, 1700000010000, "step/start", {"turn": 1, "step": 2}),
+        # 缺 data.usage → 回退取 stream 内最后一个 usage 分片
+        ev(6, 1700000012000, "assistant/message", {
+            "turn": 1, "step": 2,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "deepseek-official",
+                                   "model": "DeepSeek-Flash"}},
+            "stream": [
+                {"type": "chunk", "time": 1700000011000, "chunk": {}},
+                {"type": "chunk", "time": 1700000012000,
+                 "chunk": {"type": "usage", "usage": usage(50, 950, 5, 5)}},
+            ],
+        }),
+        ev(7, 1700000020000, "step/start", {"turn": 1, "step": 3}),
+        ev(8, 1700000020500, "assistant/message", {
+            "turn": 1, "step": 3,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "deepseek-official",
+                                   "model": "DeepSeek-Flash"}},
+            "usage": usage(11, 22, 33),
+            "stream": [{"type": "chunk", "time": 1700000020300, "chunk": {}},
+                       {"type": "chunk", "time": 1700000020500, "chunk": {}}],
+        }),
+        # 重试：关闭替换槽位，随后同 (turn, step) 的新 usage 必须重新累加
+        ev(9, 1700000021000, "llm/retry-started", {"turn": 1, "step": 3}),
+        ev(10, 1700000022000, "assistant/message", {
+            "turn": 1, "step": 3,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "provider": "deepseek-official",
+                                   "model": "DeepSeek-Flash"}},
+            "usage": usage(7, 8, 9),
+            "stream": [{"type": "chunk", "time": 1700000021800, "chunk": {}},
+                       {"type": "chunk", "time": 1700000022000, "chunk": {}}],
+        }),
+        ev(11, 1700000022500, "tool/call", {"turn": 1, "step": 3, "callId": "c1", "name": "bash"}),
+        ev(12, 1700000022600, "job/registered", {"jobId": "j1", "startedAt": 1700000022600}),
+        ev(13, 1700000023600, "job/settled", {"jobId": "j1", "startedAt": 1700000022600,
+                                              "finishedAt": 1700000023500}),
+        ev(14, 1700000024000, "request/context", {"contextWindow": 1048576}),
+    ]
+
+    compressor = zstandard.ZstdCompressor(level=3)
+    blob = b"".join(compressor.compress(line.encode() + b"\n") for line in lines)
+    (session_dir / "session.v4.jsonl.zstd").write_bytes(blob)
+
+    adapter = DshAdapter()
+    monkeypatch.setattr(adapter, "base_dirs", [str(tmp_path)])
+    monkeypatch.setattr(adapter, "sessions_dirs", [str(tmp_path / "sessions")])
+    monkeypatch.setattr(adapter, "sessions_dir", str(tmp_path / "sessions"))
+    adapter._paths_cache = []
+    adapter._dirs_sig = ()
+
+    titles, _times = adapter.get_titles_and_times()
+    assert titles[sid] == "测试会话"
+
+    daily_map, session_list = adapter.fetch_data()
+    assert len(session_list) == 1
+    sess = session_list[0]
+
+    # 步骤 1 → 取最终结算 (200+800+20)；步骤 2 → 回退 stream usage (50+950+5+5)；
+    # 步骤 3 → 重试后重新累加 (11+22+33) + (7+8+9)
+    expected = (200 + 800 + 20) + (50 + 950 + 5 + 5) + (11 + 22 + 33) + (7 + 8 + 9)
+    assert sess["totalTokens"] == expected
+    assert sess["inputTokens"] == 200 + (50 + 5) + 11 + 7
+    assert sess["cacheReadTokens"] == 800 + 950 + 22 + 8
+    assert sess["outputTokens"] == 20 + 5 + 33 + 9
+
+    # I1：模型维度求和恒等于会话总量
+    assert sum(m["totalTokens"] for m in sess["models"].values()) == sess["totalTokens"]
+    # 模型名已归一化为小写
+    assert "deepseek-flash" in sess["models"]
+    # 调用次数 = 4 条有效结算（重试后的那次也算一次真实调用）
+    assert sess["models"]["deepseek-flash"]["calls"] == 4
+
+    insights = adapter.get_insights()
+    assert insights["available"] is True
+    assert insights["totals"]["toolCalls"] == 1
+    assert insights["totals"]["toolMs"] == 900
+    assert insights["totals"]["retries"] == 1
+    assert insights["contextWindow"] == 1048576
+    assert insights["tools"] == [{"name": "bash", "calls": 1}]
+    assert insights["gaps"]
+
+
+def test_dsh_adapter_tolerates_torn_tail(monkeypatch, tmp_path):
+    """残缺尾帧（写入方正在追加）必须被安全忽略，绝不抛异常。"""
+    import zstandard
+    from myccusage_lib import zstdcodec
+    from myccusage_lib.adapters.dsh import DshAdapter
+
+    if not zstdcodec.available():
+        pytest.skip("当前环境无 Zstandard 解码能力")
+
+    compressor = zstandard.ZstdCompressor(level=3)
+    sid = "session-torn"
+    session_dir = tmp_path / "sessions" / "--tmp--" / sid
+    session_dir.mkdir(parents=True)
+
+    good = json.dumps({
+        "type": "assistant/message", "seq": 1, "time": 1700000000000,
+        "data": {
+            "turn": 1, "step": 1,
+            "message": {"role": "assistant", "content": [],
+                        "source": {"kind": "model", "model": "deepseek-flash"}},
+            "usage": {"inputTokens": 10, "outputTokens": 5,
+                      "cacheReadTokens": 100, "cacheWriteTokens": 0, "totalTokens": 115},
+            "stream": [{"type": "chunk", "time": 1699999999000, "chunk": {}},
+                       {"type": "chunk", "time": 1700000000000, "chunk": {}}],
+        },
+    }).encode()
+    header = json.dumps({"type": "session", "version": 4, "id": sid,
+                         "createdAt": 1699999999000, "cwd": "/tmp",
+                         "isSeeded": False, "delegationDepth": 0}).encode()
+
+    blob = compressor.compress(header + b"\n") + compressor.compress(good + b"\n")
+    # 模拟正在写入的残缺帧：截掉最后 30 字节
+    (session_dir / "session.v4.jsonl.zstd").write_bytes(blob + compressor.compress(b'{"type": "assist')[:-30])
+
+    adapter = DshAdapter()
+    monkeypatch.setattr(adapter, "base_dirs", [str(tmp_path)])
+    monkeypatch.setattr(adapter, "sessions_dirs", [str(tmp_path / "sessions")])
+    monkeypatch.setattr(adapter, "sessions_dir", str(tmp_path / "sessions"))
+    adapter._paths_cache = []
+    adapter._dirs_sig = ()
+
+    _daily, session_list = adapter.fetch_data()
+    assert len(session_list) == 1
+    assert session_list[0]["totalTokens"] == 115

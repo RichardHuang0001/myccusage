@@ -1,7 +1,7 @@
 """
 myccusage_lib.core:
 核心数据与计算内核：
-- 8 大 Agent 原生会话标题与时间元数据解析 (由各适配器实现，本模块负责调度)
+- 9 大 Agent 原生会话标题与时间元数据解析 (由各适配器实现，本模块负责调度)
 - DeepSeek-V4.1-Flash 高峰期等效计价模型
 - 纯结构化日账本 (Daily) 与项目总览 (Session) 聚合计算
 - 多端异机会话在内存层的并集融合
@@ -49,6 +49,7 @@ SUPPORTED_AGENTS = {
     "pi": {"name": "Pi Agent"},
     "opencode": {"name": "OpenCode"},
     "workbuddy": {"name": "WorkBuddy"},
+    "dsh": {"name": "DeepSeek Harness"},
 }
 
 def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
@@ -160,7 +161,7 @@ def get_daily_data(agent_type, sort_by_tokens=False, force_refresh=False, summar
     info = SUPPORTED_AGENTS[agent_type]
     display_name = info["name"]
 
-    # 8 个 Agent 均已配备专属原生适配器 (ADAPTERS 与 SUPPORTED_AGENTS 的键集完全一致)，
+    # 全部 Agent 均已配备专属原生适配器 (ADAPTERS 与 SUPPORTED_AGENTS 的键集完全一致)，
     # 因此不存在"回退到外部 ccusage CLI"的路径，此处直接取用适配器实例。
     adapter = ADAPTERS[agent_type]
     if summary_only:
@@ -444,7 +445,7 @@ def get_session_data(agent_type, sort_by_tokens=False):
     info = SUPPORTED_AGENTS[agent_type]
     display_name = info["name"]
 
-    # 8 个 Agent 均已配备原生适配器，不存在 CLI 回退路径
+    # 全部 Agent 均已配备原生适配器，不存在 CLI 回退路径
     adapter = ADAPTERS[agent_type]
     titles, times_override = adapter.get_titles_and_times()
 
@@ -1191,3 +1192,53 @@ def get_model_breakdown(agent_type=None):
     }
 
 
+def get_agent_insights(agent_type):
+    """
+    获取单个 Agent 的「深度运行指标」（可选能力，供 Web 专属深度分析 tab 使用）。
+
+    设计约束：
+    - 这是**可选能力**：只有实现了 `get_insights()` 的适配器才有数据，其余返回
+      `{"available": False}`，前端据此隐藏专属 tab，绝不为不支持的 Agent 造空壳视图。
+    - 不新增任何文件扫描：全部数据来自适配器已解析并缓存的事件统计
+      （dsh 的 `_file_cache` 第 4 位），因此本接口在热路径上是常数量级。
+    - 与 `get_daily_data` / `get_model_breakdown` 共享同一份适配器缓存，
+      不重复解压、不重复 json 解析。
+
+    参数:
+      agent_type: Agent 标识（如 'dsh'）
+
+    返回:
+      适配器 `get_insights()` 的原样结果，并补充 `agent` / `displayName` 字段；
+      不支持时返回 {"available": False, "agent": ..., "displayName": ...}。
+    """
+    if agent_type not in SUPPORTED_AGENTS:
+        raise ValueError(f"未知 Agent 类型: {agent_type}")
+
+    info = SUPPORTED_AGENTS[agent_type]
+    adapter = ADAPTERS.get(agent_type)
+    base = {
+        "available": False,
+        "agent": agent_type,
+        "displayName": info["name"],
+    }
+
+    getter = getattr(adapter, "get_insights", None) if adapter else None
+    if not callable(getter):
+        return base
+    if not adapter.is_available():
+        return base
+
+    agent_lock = get_agent_lock(agent_type)
+    with agent_lock:
+        try:
+            data = getter()
+        except Exception:
+            # 深度指标属于增强能力，任何异常都不应影响主账本链路
+            return base
+
+    if not data or not data.get("available"):
+        return base
+
+    data["agent"] = agent_type
+    data["displayName"] = info["name"]
+    return data

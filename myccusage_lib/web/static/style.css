@@ -173,9 +173,11 @@ body.light-theme .navbar {
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  font-size: 0.82rem;
+  /* 9 个 Agent 需要在一行内容纳：字号与内边距较早期版本略收紧，
+     既保证全部入口可见（避免第 9 个被挤出视口），又保持药丸按钮的观感一致 */
+  font-size: 0.8rem;
   font-weight: 500;
-  padding: 6px 14px;
+  padding: 6px 10px;
   border-radius: var(--radius-pill);
   cursor: pointer;
   white-space: nowrap;
@@ -2769,4 +2771,153 @@ body.light-theme .navbar {
   margin-top: 6px;
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+/* ============================================================
+   Agent 深度分析视图 (Insights)
+   ------------------------------------------------------------
+   该视图同样是**独立布局**：不参与 Token 账本的 KPI / 趋势图渲染。
+   它回答的是「引擎级运行质量」——生成速率、首字延迟、推理与工具的耗时结构、
+   工具使用画像、逐会话运行指标，以及显式的口径缺口声明。
+   全部样式复用既有 CSS 变量与 .kpi-card / .data-table / .badge 体系，
+   不修改任何既有选择器，确保 daily / session / models 视图零影响。
+   ============================================================ */
+
+.insights-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---------- 顶部说明条 ---------- */
+.insights-headbar {
+  padding: 12px 16px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.insights-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.insights-headline-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.insights-headline-hint {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* ---------- KPI 网格（沿用 .kpi-grid 的基础布局，仅收紧间距） ---------- */
+.insights-kpi-grid {
+  margin-bottom: 0;
+}
+
+.insights-kpi-grid .kpi-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 双栏面板容器 ---------- */
+.insights-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 12px;
+}
+
+@media (max-width: 1100px) {
+  .insights-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.insights-panel {
+  padding: 14px 16px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+}
+
+.insights-panel-title {
+  margin-bottom: 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* ---------- 工具使用画像（横向占比条） ---------- */
+.insights-tool-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.insights-tool-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+}
+
+.insights-tool-name {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insights-tool-track {
+  display: block;
+  height: 8px;
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.insights-tool-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--accent-blue),
+    var(--accent-indigo)
+  );
+  border-radius: var(--radius-pill);
+  transition: width 0.3s ease;
+}
+
+.insights-tool-count {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* ---------- 口径缺口声明 ---------- */
+.insights-gaps-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.78rem;
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+
+.insights-gaps-list li::marker {
+  color: var(--accent-amber);
 }

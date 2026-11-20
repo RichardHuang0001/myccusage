@@ -252,6 +252,8 @@ struct AgentTheme {
         case "workbuddy": return Color(red: 0.40, green: 0.45, blue: 0.95)// WorkBuddy Indigo
         case "grok": return Color(red: 0.95, green: 0.25, blue: 0.35)    // Grok Crimson
         case "opencode": return Color(red: 0.20, green: 0.75, blue: 0.85) // Cyan
+        case "dsh": return Color(red: 0.30, green: 0.42, blue: 1.00)     // DeepSeek Blue
+        case "pi": return Color(red: 0.55, green: 0.36, blue: 0.96)      // Violet
         default: return Color.gray
         }
     }
@@ -265,6 +267,8 @@ struct AgentTheme {
         case "workbuddy": return "briefcase.fill"
         case "grok": return "flame.fill"
         case "opencode": return "chevron.left.forwardslash.chevron.right"
+        case "dsh": return "water.waves"
+        case "pi": return "p.circle.fill"
         default: return "circle.fill"
         }
     }

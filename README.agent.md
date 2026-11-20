@@ -19,6 +19,7 @@
   - [2.4 myccusage_lib/web/static/app.js (响应式客户端与动态重算)](#24-myccusage_libwebstaticappjs-响应式客户端与动态重算)
 - [3. Agent 维护与二次开发实战指南 (Cookbook)](#3-agent-维护与二次开发实战指南-cookbook)
   - [3.1 新增一个全新 Agent 适配](#31-新增一个全新-agent-适配)
+  - [3.1.1 Agent 专属深度指标（可选能力 get_insights()）](#311-agent-专属深度指标可选能力-get_insights)
   - [3.2 增加或更新预设计价模型](#32-增加或更新预设计价模型)
   - [3.3 缓存清理与调试技巧](#33-缓存清理与调试技巧)
   - [3.4 版本发布与 PyPI 发版流程（完整可执行清单见 docs/发版指引.md）](#34-版本发布与-pypi-发版自动化流程)
@@ -163,7 +164,9 @@ myccusage/
 │   │   ├── codex.py            # OpenAI Codex token_count delta 增量累计
 │   │   ├── grok.py             # Grok turn_completed 聚合与增量提取
 │   │   ├── agy.py              # Google Antigravity 原生 Protobuf varint 解码内核
+│   │   ├── dsh.py              # DeepSeek Harness 多帧 zstd 事件日志 + 官方投影口径复刻
 │   │   └── __init__.py         # 适配器注册表 (ADAPTERS)
+│   ├── zstdcodec.py            # 零依赖 Zstandard 多帧解码内核 (ctypes libzstd / CLI 三级降级)
 │   ├── core.py                 # 标题解析、单 Agent 粒度缓存、聚合计算内核
 │   ├── cli.py                  # CLI 参数解析、East Asian Width 排版渲染与 Dock 调度
 │   ├── macos/                  # macOS 程序坞应用源码（唯一真源，随 Wheel 一同发布）
@@ -192,7 +195,7 @@ myccusage/
 ### 2.1 `myccusage_lib/core.py` (数据内核与元数据提取)
 
 #### 全局常量与注册表：
-- `SUPPORTED_AGENTS`（仅登记展示名；8 个 Agent 均具备专属原生适配器，不存在外部 CLI 回退路径）：
+- `SUPPORTED_AGENTS`（仅登记展示名；9 个 Agent 均具备专属原生适配器，不存在外部 CLI 回退路径）：
   ```python
   SUPPORTED_AGENTS = {
       "agy": {"name": "Google Antigravity"},
@@ -203,8 +206,11 @@ myccusage/
       "pi": {"name": "Pi Agent"},
       "opencode": {"name": "OpenCode"},
       "workbuddy": {"name": "WorkBuddy"},
+      "dsh": {"name": "DeepSeek Harness"},
   }
   ```
+
+  9 个 Agent 均具备专属原生适配器，`ADAPTERS` 与 `SUPPORTED_AGENTS` 的键集必须完全一致。
 - `USD_CNY_RATE`：人民币兑美元参考汇率，仅用于把 CNY 等效费用换算为 USD 展示值。
 - `ADAPTERS`（定义于 `myccusage_lib/adapters/__init__.py`）：Agent ID → 适配器实例，键集必须与 `SUPPORTED_AGENTS` 完全一致。
 
@@ -216,7 +222,7 @@ myccusage/
   - **作用**：获取各 Session 全生命周期的累计消耗总览。
   - **返回值**：字典包含 `sessions` 列表（含 `sessionId`, `time`, `title`, `totalTokens`, `cost`, `hitRate` 等）及 `summary`。
 - `get_all_agents_summary() -> dict`
-  - **作用**：Web 看板首屏使用的 8 大 Agent 跨助手全景对比数据，包含各 Agent 总 Token、各部分细分与折算总费用。
+  - **作用**：Web 看板首屏使用的 9 大 Agent 跨助手全景对比数据，包含各 Agent 总 Token、各部分细分与折算总费用。
 - `get_model_breakdown(agent_type: str = None) -> dict`
   - **作用**：按**实际调用的模型**维度聚合 Token 与调用次数（`agent_type=None` 表示全部 Agent）。
   - **返回值**：`models`（按 Token 降序，每项含 `model`/四类 Token/`calls`/`agents` 来源明细）、
@@ -241,6 +247,7 @@ myccusage/
 - `pi`: `~/.pi/agent/sessions/*/*.jsonl`
 - `opencode`: `~/.local/share/opencode/opencode.db`
 - `workbuddy`: `~/.workbuddy/workbuddy.db`，兜底 `~/.workbuddy/projects/*/*.jsonl`
+- `dsh`: `$DSH_HOME/sessions/*/*/session.v4.jsonl.zstd` 内的 `session/title` 事件（latest-wins）
 
 ---
 
@@ -267,6 +274,9 @@ myccusage/
   - `GET  /api/data?agent=<agent>&mode=<daily|session>&sort=<time|tokens>`: 单 Agent 详细数据。
   - `GET  /api/models?agent=<agent|all>`: **按实际调用的模型**聚合的 Token / 调用次数 / 来源 Agent
     （含 `byDate`，供前端按任意时间范围自行聚合，见 2.4）。
+  - `GET  /api/insights?agent=<agent>`: **Agent 专属深度指标**（可选能力）。仅当适配器实现了
+    `get_insights()` 时返回 `available: true`，否则 `available: false`（前端据此隐藏专属 tab，
+    绝不为不支持的 Agent 造空壳视图）。当前由 `dsh` 提供。
   - `POST /api/refresh?agent=<agent|all>`: 强制失效缓存并重新解析。
   - `GET  /api/leave` / `POST /api/heartbeat`: 页面侧保活与离开信号。
   - `GET  /api/sync/status`、`POST /api/sync/trigger|config|unbind`: 多端 Git 同步。
@@ -344,6 +354,49 @@ myccusage/
    - `base._accumulate_records()` 会自动产出 `models` 子结构（含 `calls` 调用次数），
      **无需**在各适配器里重复实现累加逻辑。
    - 不做模型提取也可先填 `UNKNOWN_MODEL` 占位，保持 8 元组契约统一。
+7. **接入深度指标**（可选，见 3.1.1）：
+   若能稳定拿到步级耗时/工具结构，实现 `get_insights()` 即可自动获得专属 tab；
+   `core.get_agent_insights()` 会按能力探测，未实现者前端自动隐藏该 tab。
+8. **压缩日志**（如该 Agent 使用 zstd 等多帧容器）：
+   直接复用 `myccusage_lib/zstdcodec.py`，不要自行引入 pip 依赖。
+   它提供 `available()` / `decompress_file(path)` / `decompress(raw)`，
+   内部按 `ctypes libzstd → zstd CLI → 不可用` 三级降级，且容忍残缺尾帧。
+
+---
+
+### 3.1.1 Agent 专属深度指标（可选能力 `get_insights()`）
+
+并非所有 Agent 都有「运行质量」维度的数据。凡是能从原生日志中稳定拿到
+**步级耗时 / 首字延迟 / 工具调用结构** 的适配器，都可以实现 `get_insights()`
+以在 Web 上获得一个专属的「深度分析」tab。
+
+契约：
+```python
+def get_insights(self) -> dict:
+    return {
+        "available": True,          # 必需；False 时前端隐藏 tab
+        "backend": "libzstd",       # 可选；展示解码/采集链路
+        "totals": {...},            # 必需；见下
+        "contextWindow": 1048576,   # 可选
+        "models":   [...],          # 可选；按模型聚合
+        "days":     [...],          # 可选；逐日
+        "sessions": [...],          # 可选；逐会话运行结构
+        "tools":    [...],          # 可选；工具名 × 调用次数
+        "gaps":     [...],          # 强烈建议；诚实上报无法获取的口径
+    }
+```
+
+强制约束（否则会破坏本项目的核心承诺）：
+
+1. **不得新增文件扫描**：数据必须来自 `fetch_data()` 已经解析并缓存的内容
+   （dsh 就是把它塞进 `_file_cache` 条目的第 4 位），否则切 tab 会触发二次解压。
+2. **不得虚构口径**：拿不到的就写进 `gaps`，不要用 0 或估值冒充。前端会把
+   `gaps` 原样渲染成「口径说明与已知缺口」。
+3. **异常必须收敛**：`core.get_agent_insights()` 已统一 try/except 兜底，
+   但适配器内部仍应自行容错，确保单个损坏文件不会让整个 tab 空白。
+
+当前实现：`dsh`（DeepSeek Harness）—— TPS / TTFT / 推理与工具耗时结构 /
+工具使用画像 / 逐会话运行指标。
 
 ---
 

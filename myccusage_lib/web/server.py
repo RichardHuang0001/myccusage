@@ -2,7 +2,8 @@
 myccusage_lib.web.server:
 轻量嵌入式 Web 服务与 RESTful API:
 - 基于 Python 标准库 http.server.ThreadingHTTPServer
-- 提供 /api/ping, /api/today, /api/data, /api/all, /api/models, /api/refresh, /api/leave
+- 提供 /api/ping, /api/today, /api/data, /api/all, /api/models, /api/insights,
+  /api/refresh, /api/leave
   以及 /api/sync/* (status/trigger/config/unbind) 接口
 - 自动托管静态资源 (HTML5 SPA)
 - 网页关闭心跳联动退出守护 (关闭网页自动安全退出后台)
@@ -25,6 +26,7 @@ from ..core import (
     get_all_agents_summary,
     get_today_quick_summary,
     get_model_breakdown,
+    get_agent_insights,
 )
 from ..sync import (
     load_sync_config,
@@ -386,6 +388,28 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     data = get_session_data(agent, sort_by_tokens=sort_by_tokens)
                 else:
                     data = get_daily_data(agent, sort_by_tokens=sort_by_tokens)
+                DataCache.set(cache_key, data)
+                self.send_json(data)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        if path == "/api/insights":
+            # Agent 专属深度指标（可选能力）：仅对实现了 get_insights() 的适配器有数据。
+            # 前端据此决定是否展示专属分析 tab，未实现者返回 available=false。
+            agent = query.get("agent", [""])[0]
+            if agent not in SUPPORTED_AGENTS:
+                self.send_json({"error": f"不支持的 Agent: {agent}"}, 400)
+                return
+
+            cache_key = (agent, "insights", False)
+            cached = DataCache.get(cache_key)
+            if cached is not None:
+                self.send_json(cached)
+                return
+
+            try:
+                data = get_agent_insights(agent)
                 DataCache.set(cache_key, data)
                 self.send_json(data)
             except Exception as e:

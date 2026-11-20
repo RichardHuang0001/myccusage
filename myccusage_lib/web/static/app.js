@@ -221,7 +221,11 @@
     modelShareBasis: 'tokens', // tokens | cost —— 占比条的统计基数
     modelStart: '',
     modelEnd: '',
-    modelFilter: ''
+    modelFilter: '',
+
+    // 深度分析视图 (Insights) 专属状态 —— 仅对提供 get_insights() 的 Agent 生效
+    insightsData: null,
+    insightsCapable: new Map()   // agentId -> true/false，缓存 /api/insights 的能力探测结果
   };
 
   // DOM 元素缓存
@@ -319,6 +323,15 @@
     tableSection: document.getElementById('tableSection'),
     raceChartSection: document.getElementById('raceChartSection'),
     sortGroup: document.getElementById('sortGroup'),
+
+    // 深度分析视图 (Insights) —— 仅对有 get_insights() 能力的 Agent 开放
+    tabInsights: document.getElementById('tabInsights'),
+    insightsSection: document.getElementById('insightsSection'),
+    insightsHeadbar: document.getElementById('insightsHeadbar'),
+    insightsKpiGrid: document.getElementById('insightsKpiGrid'),
+    insightsToolPanel: document.getElementById('insightsToolPanel'),
+    insightsSessionPanel: document.getElementById('insightsSessionPanel'),
+    insightsGapsPanel: document.getElementById('insightsGapsPanel'),
 
     // 模型维度视图 (Models)
     modelsSection: document.getElementById('modelsSection'),
@@ -584,7 +597,8 @@
 
     bindEvents();
     checkSyncStatus();
-    loadData();
+    // 先探测当前 Agent 是否具备「深度分析」能力（决定 tab 显隐），再加载主数据
+    syncInsightsTab().then(() => loadData());
   }
 
   // 心跳保活与自动退出联动机制
@@ -1696,7 +1710,8 @@
       document.querySelectorAll('.segment-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.agent = agent;
-      loadData();
+      // 切换 Agent 后先同步「深度分析」tab 的可用性，再加载数据
+      syncInsightsTab().then(() => loadData());
     });
 
     // 切换视图模式 (每日账本 / 项目会话 / 模型维度)
@@ -1910,19 +1925,31 @@
     }
   }
 
+  // 当前 Agent 是否具备「深度分析」能力（由后端 /api/insights 的 available 决定）。
+  // 仅 dsh 这类上报了丰富运行指标的 Agent 才开放该 tab，绝不为不支持的 Agent 造空壳视图。
+  function hasInsights(agentId) {
+    return !!agentId && state.insightsCapable.get(agentId) === true;
+  }
+
   // 视图区块显隐的统一调度（集中一处，避免 style.display 赋值散落各处而在新增视图时漏改）
   //
-  // 模型维度视图采用**完全独立的布局**：不复用 Token 统计的 KPI 卡片与趋势/环形图，
-  // 因为它的口径是「选定时间范围内各实际模型的消耗量 / 占比 / 计价 / 调用次数」，
-  // 与账本口径（按日/按会话的 Token 与等效费用）无关，混排只会带来误导性的冗余文本。
-  function applyViewLayout(isModels) {
+  // 模型维度视图与深度分析视图均采用**完全独立的布局**：不复用 Token 统计的
+  // KPI 卡片与趋势/环形图，因为它们各自的口径与账本口径（按日/按会话的 Token
+  // 与等效费用）无关，混排只会带来误导性的冗余文本。
+  // 参数 mode：'daily' | 'session' | 'models' | 'insights'
+  function applyViewLayout(mode) {
     // 视图切换 tab 在所有模式下常显（含全景对比），使模式入口保持一致
     if (el.modeSelector) el.modeSelector.style.display = 'flex';
-    if (el.modelsSection) el.modelsSection.style.display = isModels ? 'block' : 'none';
-    // 「排序方式」仅对账本视图有意义；模型维度自带排序口径，故在此隐藏以免误导
-    if (el.sortGroup) el.sortGroup.style.display = isModels ? 'none' : 'flex';
 
-    if (isModels) {
+    const isModels = mode === 'models';
+    const isInsights = mode === 'insights';
+
+    if (el.modelsSection) el.modelsSection.style.display = isModels ? 'block' : 'none';
+    if (el.insightsSection) el.insightsSection.style.display = isInsights ? 'block' : 'none';
+    // 「排序方式」仅对账本视图有意义；模型/深度分析自带排序口径，故在此隐藏以免误导
+    if (el.sortGroup) el.sortGroup.style.display = (isModels || isInsights) ? 'none' : 'flex';
+
+    if (isModels || isInsights) {
       if (el.kpiSection) el.kpiSection.style.display = 'none';
       el.chartsSection.style.display = 'none';
       el.allAgentsSection.style.display = 'none';
@@ -1950,14 +1977,29 @@
 
   // 数据拉取与渲染
   async function loadData() {
+    // 深度分析视图：仅当该 Agent 具备 insights 能力时可用，否则自动回退到每日账本
+    if (state.mode === 'insights' && !hasInsights(state.agent)) {
+      state.mode = 'daily';
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-mode') === 'daily');
+      });
+    }
+
     // 模型维度视图：任意 Agent 选择下都是同一套独立布局与独立数据源（/api/models）
     if (state.mode === 'models') {
-      applyViewLayout(true);
+      applyViewLayout('models');
       await loadAndRenderModels();
       return;
     }
 
-    applyViewLayout(false);
+    // 深度分析视图：独立布局与独立数据源（/api/insights）
+    if (state.mode === 'insights') {
+      applyViewLayout('insights');
+      await loadAndRenderInsights();
+      return;
+    }
+
+    applyViewLayout('daily');
 
     el.ledgerContainer.innerHTML = `
       <div class="loading-state">
@@ -2500,6 +2542,7 @@
     pi: { stroke: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.15)', name: 'Pi Agent' },
     opencode: { stroke: '#6366f1', bg: 'rgba(99, 102, 241, 0.15)', name: 'OpenCode' },
     workbuddy: { stroke: '#f43f5e', bg: 'rgba(244, 63, 94, 0.15)', name: 'WorkBuddy' },
+    dsh: { stroke: '#4d6bfe', bg: 'rgba(77, 107, 254, 0.15)', name: 'DeepSeek Harness' },
   };
 
   // 通用 Chart.js Y 轴刻度同步覆盖层组件
@@ -3425,6 +3468,212 @@
       }
     }
     return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
+  }
+
+  // ==================================================================
+  // 深度分析视图 (Insights)
+  //
+  // 面向「上报了丰富运行指标」的 Agent（当前为 DeepSeek Harness）。数据来自
+  // /api/insights，全部由适配器在解析事件日志时顺带产出，**不额外扫描任何文件**，
+  // 也不做第二次解压 —— 因此切到这个 tab 的代价与 /api/data 同量级。
+  //
+  // 与模型维度视图一致，这里刻意不复用账本的 KPI/趋势图：它的口径是
+  // 「引擎级运行质量」（TPS / 首字延迟 / 思考–工具耗时结构 / 工具使用画像），
+  // 与 Token 账本无关，混排会误导。
+  // ==================================================================
+
+  // 探测某 Agent 是否具备深度分析能力（结果缓存，避免每次点 tab 都请求）
+  async function probeInsights(agentId) {
+    if (!agentId || agentId === 'all') return false;
+    if (state.insightsCapable.has(agentId)) return state.insightsCapable.get(agentId);
+    let capable = false;
+    try {
+      const res = await fetch(`/api/insights?agent=${encodeURIComponent(agentId)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (json && json.available) {
+        capable = true;
+        state.insightsData = json;
+      }
+    } catch (_) {
+      // 探测失败视为不支持，静默隐藏 tab（不阻塞主链路）
+    }
+    state.insightsCapable.set(agentId, capable);
+    return capable;
+  }
+
+  // 根据当前 Agent 决定是否显示「深度分析」tab；若当前正处于该 tab 而能力消失，回退到日记账
+  async function syncInsightsTab() {
+    const capable = await probeInsights(state.agent);
+    if (el.tabInsights) el.tabInsights.style.display = capable ? '' : 'none';
+    if (!capable && state.mode === 'insights') {
+      state.mode = 'daily';
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-mode') === 'daily');
+      });
+    }
+  }
+
+  async function loadAndRenderInsights() {
+    el.insightsHeadbar.innerHTML = '';
+    el.insightsKpiGrid.innerHTML = '';
+    el.insightsToolPanel.innerHTML = '';
+    el.insightsSessionPanel.innerHTML = '';
+    el.insightsGapsPanel.innerHTML = `
+      <div class="loading-state">
+        <div class="spinner"></div>
+        <p>正在汇总运行指标...</p>
+      </div>
+    `;
+
+    try {
+      const res = await fetch(`/api/insights?agent=${encodeURIComponent(state.agent)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      if (!json.available) {
+        el.insightsGapsPanel.innerHTML = `<div class="empty-state">该 Agent 暂不支持深度分析。</div>`;
+        return;
+      }
+      state.insightsData = json;
+      state.insightsCapable.set(state.agent, true);
+      renderInsightsView(json);
+    } catch (err) {
+      el.insightsGapsPanel.innerHTML =
+        `<div class="empty-state">⚠️ 无法加载深度指标: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  // 毫秒 → 人类可读（与 CLI format_ms_duration 保持同一套口径）
+  function fmtMs(ms) {
+    if (!ms || ms <= 0) return '--';
+    return formatMsDuration(ms);
+  }
+
+  // 单个 KPI 卡片（复用既有 .kpi-card 结构，保证与账本视图观感一致）
+  function kpiCard(title, badge, value, sub, cls) {
+    return `
+      <div class="kpi-card${cls ? ' ' + cls : ''}">
+        <div class="kpi-header">
+          <span class="kpi-title">${escapeHtml(title)}</span>
+          <span class="kpi-badge ${cls === 'highlight-card' ? 'badge-green' : 'badge-blue'}">${escapeHtml(badge)}</span>
+        </div>
+        <div class="kpi-value">${value}</div>
+        <div class="kpi-sub">${sub}</div>
+      </div>
+    `;
+  }
+
+  function renderInsightsView(data) {
+    const t = data.totals || {};
+
+    // ---- 顶部说明条：后端解码链路 + 会话数 ----
+    el.insightsHeadbar.innerHTML = `
+      <div class="insights-headline">
+        <span class="insights-headline-title">⚡ ${escapeHtml(data.displayName || '运行深度分析')}</span>
+        <span class="badge badge-subtle" title="Zstandard 多帧解码后端">解码内核：${escapeHtml(data.backend || '-')}</span>
+        <span class="badge badge-subtle">${t.sessions || 0} 个会话 · ${t.turns || 0} 轮 · ${t.steps || 0} 步 · ${t.toolCalls || 0} 次工具调用</span>
+        ${data.contextWindow ? `<span class="badge badge-subtle">上下文窗口 ${formatTokens(data.contextWindow)}</span>` : ''}
+      </div>
+      <p class="insights-headline-hint">
+        口径来自本地事件日志的逐步结算记录，与账本 Token 同源；耗时类指标为模型实测时间戳差值。
+      </p>
+    `;
+
+    // ---- KPI 网格 ----
+    const tps = t.avgTps > 0 ? `${t.avgTps} tok/s` : '--';
+    const hitRate = (t.cacheHitRate || 0).toFixed(1) + '%';
+
+    el.insightsKpiGrid.innerHTML = [
+      kpiCard('生成速率 TPS', '纯解码口径', tps,
+        `解码 ${fmtMs(t.decodeMs)} · ${formatTokens(t.decodeTokens)} 输出 Token`),
+      kpiCard('首字延迟 TTFT', '平均', t.avgTtftMs > 0 ? `${t.avgTtftMs} ms` : '--',
+        `累计 ${fmtMs(t.ttftMs)} / ${t.steps || 0} 步`),
+      kpiCard('单步推理耗时', 'LLM 端到端', t.avgLlmMs > 0 ? `${t.avgLlmMs} ms` : '--',
+        `累计 ${fmtMs(t.llmMs)}`),
+      kpiCard('工具执行耗时', '平均每次', t.avgToolMs > 0 ? `${t.avgToolMs} ms` : '--',
+        `累计 ${fmtMs(t.toolMs)} / ${t.toolCalls || 0} 次`),
+      kpiCard('缓存命中率', 'Prompt 节省', hitRate,
+        `Cache ${formatTokens(t.cacheReadTokens)} / Input ${formatTokens(t.inputTokens)}`),
+      kpiCard('调用规模', '模型交互', `${t.calls || 0}`,
+        `${formatTokens(t.totalTokens)} Token 总量`),
+      kpiCard('稳定性', '重试 / 中断', `${t.retries || 0} / ${t.interrupted || 0}`,
+        `压缩 ${t.compactions || 0} 次`),
+      kpiCard('思考-工具比', '耗时结构', (() => {
+        const denom = (t.llmMs || 0) + (t.toolMs || 0);
+        if (denom <= 0) return '--';
+        return ((t.llmMs / denom) * 100).toFixed(1) + '%';
+      })(), `推理 ${fmtMs(t.llmMs)} · 工具 ${fmtMs(t.toolMs)}`, 'highlight-card'),
+    ].join('');
+
+    // ---- 工具使用画像 ----
+    const tools = data.tools || [];
+    el.insightsToolPanel.innerHTML = `
+      <div class="insights-panel-title">🔧 工具使用画像</div>
+      ${tools.length ? `
+        <div class="insights-tool-bars">
+          ${tools.map(tool => {
+            const pct = t.toolCalls > 0 ? (tool.calls / t.toolCalls) * 100 : 0;
+            return `
+              <div class="insights-tool-row">
+                <span class="insights-tool-name">${escapeHtml(tool.name)}</span>
+                <span class="insights-tool-track"><span class="insights-tool-fill" style="width:${pct.toFixed(1)}%"></span></span>
+                <span class="insights-tool-count">${tool.calls}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : '<div class="empty-state">暂无工具调用记录</div>'}
+    `;
+
+    // ---- 会话耗时结构表 ----
+    const sessions = (data.sessions || []).slice(0, 12);
+    el.insightsSessionPanel.innerHTML = `
+      <div class="insights-panel-title">📊 会话运行结构（按 Token 降序 · Top ${sessions.length}）</div>
+      ${sessions.length ? `
+        <div class="session-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>会话</th>
+                <th class="num">Token</th>
+                <th class="num">轮/步</th>
+                <th class="num">工具</th>
+                <th class="num">LLM 耗时</th>
+                <th class="num">工具耗时</th>
+                <th class="num">TTFT</th>
+                <th class="num">TPS</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sessions.map(s => {
+                const sTps = s.decodeMs > 0 ? (s.decodeTokens / (s.decodeMs / 1000)).toFixed(0) + ' tok/s' : '--';
+                const sTtft = s.steps > 0 ? (s.ttftMs / s.steps).toFixed(0) + ' ms' : '--';
+                return `
+                  <tr>
+                    <td title="${escapeHtml(s.cwd || '')}">${escapeHtml(s.title || s.sessionId || '(未命名)')}</td>
+                    <td class="num">${formatTokens(s.totalTokens)}</td>
+                    <td class="num">${s.turns}/${s.steps}</td>
+                    <td class="num">${s.toolCalls}</td>
+                    <td class="num">${fmtMs(s.llmMs)}</td>
+                    <td class="num">${fmtMs(s.toolMs)}</td>
+                    <td class="num">${sTtft}</td>
+                    <td class="num">${sTps}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : '<div class="empty-state">暂无会话数据</div>'}
+    `;
+
+    // ---- 口径缺口（诚实上报，不虚构数值） ----
+    const gaps = data.gaps || [];
+    el.insightsGapsPanel.innerHTML = gaps.length ? `
+      <div class="insights-panel-title">ℹ️ 口径说明与已知缺口</div>
+      <ul class="insights-gaps-list">
+        ${gaps.map(g => `<li>${escapeHtml(g)}</li>`).join('')}
+      </ul>
+    ` : '';
   }
 
   async function loadAndRenderModels() {

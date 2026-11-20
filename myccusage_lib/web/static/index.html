@@ -36,6 +36,7 @@
           <button class="segment-btn" data-agent="pi">Pi</button>
           <button class="segment-btn" data-agent="opencode">OpenCode</button>
           <button class="segment-btn" data-agent="workbuddy">WorkBuddy</button>
+          <button class="segment-btn" data-agent="dsh" title="DeepSeek Harness">DSH</button>
         </div>
       </div>
 
@@ -139,6 +140,9 @@
             <button class="tab-btn" data-mode="models">
               <span class="tab-icon">🤖</span> 模型维度 (Models)
             </button>
+            <button class="tab-btn" data-mode="insights" id="tabInsights" style="display: none;">
+              <span class="tab-icon">⚡</span> 深度分析 (Insights)
+            </button>
           </div>
           <!-- 计价模型下拉选择器 (支持管理模型、智能导入与记忆选择) -->
           <div class="pricing-dropdown-container" id="pricingDropdownContainer">
@@ -228,6 +232,19 @@
 
         <!-- 模型明细表 -->
         <div class="session-table-wrap" id="modelTableWrap"></div>
+      </section>
+
+      <!-- Agent 深度分析视图 (Insights)
+           仅对提供 get_insights() 的 Agent 开放（当前为 DeepSeek Harness）。
+           独立布局：复用既有 .kpi-card / .data-table / 玻璃拟态变量，不引入新配色体系。 -->
+      <section class="insights-section" id="insightsSection" style="display: none;">
+        <div class="insights-headbar" id="insightsHeadbar"></div>
+        <div class="kpi-grid insights-kpi-grid" id="insightsKpiGrid"></div>
+        <div class="insights-columns">
+          <div class="insights-panel" id="insightsToolPanel"></div>
+          <div class="insights-panel" id="insightsSessionPanel"></div>
+        </div>
+        <div class="insights-panel" id="insightsGapsPanel"></div>
       </section>
 
       <!-- KPI 核心指标卡片 (8 卡 4x2 黄金排版) -->
@@ -527,7 +544,7 @@
     <!-- 底部状态栏 -->
     <footer class="footer">
       <div class="footer-left">
-        <span>myccusage v1.8.5</span>
+        <span>myccusage v1.9.0</span>
         <span class="divider">|</span>
         <span>本地缓存源: <code>~/.cache/myccusage/</code></span>
       </div>

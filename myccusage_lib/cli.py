@@ -808,6 +808,7 @@ def print_usage_hint():
     print("  claude                  Claude Code")
     print("  codex                   OpenAI Codex")
     print("  workbuddy               WorkBuddy (腾讯旗下 AI 编程 Agent)")
+    print("  dsh                     DeepSeek Harness (DeepSeek 官方 Agent)")
     print("  grok                    Grok")
     print("  hermes                  Hermes Agent")
     print("  opencode                OpenCode")
@@ -1036,6 +1037,8 @@ def main(raw_args=None):
             agent_type = "opencode"
         elif a in ("--workbuddy", "workbuddy"):
             agent_type = "workbuddy"
+        elif a in ("--dsh", "dsh", "deepseek-harness", "harness"):
+            agent_type = "dsh"
         # 解析统计视图模式标记（Session总览或每日账本）
         elif a in ("-s", "--session", "session"):
             mode = "session"
