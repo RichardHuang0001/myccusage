@@ -28,8 +28,7 @@ CONFIG = os.path.join(CONFIG_DIR, "doubao_config.json")
 
 MIN_INTERVAL = 30.0      # 节流：双驱动源（Dock 60s / Web 心跳 2.5s）合并到 ≥30s 一次
 OVERLAP = 4096           # WAL 尾读重叠窗，捕获跨边界记录
-_COMPACT_LINES = 5000    # 账本压实阈值
-_COMPACT_BYTES = 2_000_000
+_COMPACT_SLACK = 2000    # 账本重复行冗余阈值：仅重复膨胀超过此值才压实，唯一数据增长不触发
 
 # --- 模块级状态 ---
 _enabled = False
@@ -227,7 +226,8 @@ def _save_state() -> None:
 
 def _maybe_compact() -> None:
     global _journal_bytes, _journal_lines
-    if _journal_lines <= _COMPACT_LINES and _journal_bytes <= _COMPACT_BYTES:
+    # 仅当重复行冗余超过 slack 才压实；唯一数据自然增长不触发，避免每 tick 全量重写（O(N²)）
+    if _journal_lines - (len(_usage) + len(_meta)) <= _COMPACT_SLACK:
         return
     tmp = f"{JOURNAL}.tmp.{os.getpid()}"
     n = b = 0

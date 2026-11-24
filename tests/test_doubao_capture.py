@@ -10,6 +10,7 @@ import struct
 import pytest
 
 from myccusage_lib.adapters import doubao_capture as DC
+from myccusage_lib import idbcodec as C
 
 
 def _frame(typ: int, payload: bytes) -> bytes:
@@ -127,3 +128,95 @@ def test_two_rounds(env):
     st = DC.get_status()
     assert st["capturedRounds"] == 2
     assert st["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# P4 边界加固
+# ---------------------------------------------------------------------------
+MID_C = "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _venc(v: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        out.append(b | (0x80 if v else 0))
+        if not v:
+            return bytes(out)
+
+
+def _make_ldb(blob: bytes) -> bytes:
+    """构造含单个 raw 数据块（内容=blob）的最小合法 .ldb。"""
+    out = bytearray()
+    out += blob + b"\x00" + b"\x00\x00\x00\x00"  # data block + trailer(type0)
+    handle = _venc(0) + _venc(len(blob))
+    body = bytearray()
+    body += _venc(0) + _venc(1) + _venc(len(handle)) + b"z" + handle
+    body += struct.pack("<I", 0) + struct.pack("<I", 1)  # restart array
+    index = bytes(body)
+    idx_off = len(out)
+    out += index + b"\x00" + b"\x00\x00\x00\x00"
+    footer = bytearray()
+    footer += _venc(0) + _venc(0)
+    footer += _venc(idx_off) + _venc(len(index))
+    footer += b"\x00" * (40 - len(footer))
+    footer += C._TABLE_MAGIC
+    out += footer
+    return bytes(out)
+
+
+def test_rotation_catchup(env):
+    _append_wal(env, _usage_blob(MID_A), "000001.log")
+    DC.tick(force=True)
+    assert MID_A in DC._usage
+    # 轮换：旧 WAL 消失，数据压入新 .ldb
+    (env / "000001.log").unlink()
+    (env / "000002.ldb").write_bytes(_make_ldb(_usage_blob(MID_B)))
+    DC.tick(force=True)
+    assert MID_B in DC._usage  # 冷路径追平捕获
+    assert not any("000001.log" in k for k in DC._state["files"])  # 已清理
+
+
+def test_multi_profile(env, monkeypatch):
+    src2 = env.parent / "src2"
+    src2.mkdir()
+    monkeypatch.setattr(DC, "_source_dirs", lambda: [str(env), str(src2)])
+    _append_wal(env, _usage_blob(MID_A))
+    _append_wal(src2, _usage_blob(MID_B))
+    DC.tick(force=True)
+    assert MID_A in DC._usage and MID_B in DC._usage
+
+
+def test_journal_compaction(env, monkeypatch):
+    monkeypatch.setattr(DC, "_COMPACT_SLACK", 2)
+    _append_wal(env, _usage_blob(MID_A))
+    _append_wal(env, _usage_blob(MID_B))
+    DC.tick(force=True)
+    # 制造重复行冗余（模拟重叠/轮换导致的重复追加）
+    dup = [x for x in _lines() if x["type"] == "usage"][0]
+    with open(DC.JOURNAL, "a", encoding="utf-8") as f:
+        for _ in range(5):
+            f.write(json.dumps(dup, ensure_ascii=False) + "\n")
+    DC._journal_lines += 5
+    _append_wal(env, _usage_blob(MID_C))
+    DC.tick(force=True)  # 冗余超阈值 → 压实
+    assert len(_lines()) == len(DC._usage) + len(DC._meta)
+    assert {x["message_id"] for x in _lines() if x["type"] == "usage"} == {MID_A, MID_B, MID_C}
+
+
+def test_config_hot_switch(env):
+    DC.set_enabled(True)
+    assert DC._enabled is True
+    assert json.load(open(DC.CONFIG))["enabled"] is True
+    DC.set_enabled(False)
+    assert DC._enabled is False
+    assert json.load(open(DC.CONFIG))["enabled"] is False
+
+
+def test_corrupted_ldb_tolerated(env):
+    _append_wal(env, _usage_blob(MID_A))
+    # 损坏的 .ldb：合法 magic 但内容截断，不得让整个 tick 崩溃
+    (env / "000009.ldb").write_bytes(b"\x00" * 40 + C._TABLE_MAGIC)
+    DC.tick(force=True)
+    assert MID_A in DC._usage  # 正常数据仍捕获

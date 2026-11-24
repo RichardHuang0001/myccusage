@@ -30,10 +30,14 @@
 
 ## 主要功能
 
-- **支持多种编程 Agent**：统一查看 Google Antigravity、Claude Code、Hermes Agent、OpenAI Codex、Grok、Pi Agent、OpenCode、WorkBuddy、DeepSeek Harness 的使用记录。
+- **支持多种编程 Agent**：统一查看 Google Antigravity、Claude Code、Hermes Agent、OpenAI Codex、Grok、Pi Agent、OpenCode、WorkBuddy、DeepSeek Harness、豆包工作 的使用记录。
 - **Token 消耗与费用参考**：统计 Input、Cache 与 Output 构成，支持按 DeepSeek-V4.1-Flash、Gemini 3.8 Flash 等模型单价换算参考费用。
 - **缓存命中率统计**：直观查看每次会话与整体的 KV Cache 命中比例，了解缓存节省情况。
 - **自动读取会话标题**：解析本地 SQLite / JSONL / Protobuf 文件还原会话标题，避免面对难以辨识的 UUID。
+- **豆包工作采集（可选开关）**：豆包工作的本地存储会持续清理历史用量，因此采用「定期增量抓取 + 丢失前固化」方式统计。
+  在 Web 看板导航栏点击 📡 按钮即可开启或关闭，**默认关闭**；关闭时零额外性能占用，完全退化回原有刷新开销。
+  采集复用既有程序坞/网页心跳，不另起进程。需注意：仅开关开启且程序坞或网页运行期间产生的轮次会被记录，关闭时段的数据不可追回；
+  统计口径为上下文窗口占用（输入侧参考量，非计费 Token），看板顶部有相应说明。
 - **两种统计模式**：
   - **每日账本（`-d`）**：按自然日精确切片，防止跨日会话导致的数据漂移，适合日常核算。
   - **项目总览（`-s`）**：按会话/项目完整生命周期累计总消耗。
@@ -90,6 +94,7 @@ ccu codex           # OpenAI Codex
 ccu workbuddy       # WorkBuddy
 ccu grok            # Grok
 ccu dsh             # DeepSeek Harness
+ccu doubao          # 豆包工作（需先在 Web 看板 📡 开启采集）
 
 # 3. 查看项目全生命周期总览 (-s)
 ccu agy -s

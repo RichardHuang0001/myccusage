@@ -121,6 +121,7 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 #### 缓存目录与命名：
 - 目录路径：`os.path.expanduser("~/.cache/myccusage")`
 - 单 Agent 缓存文件：`~/.cache/myccusage/{agent}_daily.json`（例如 `agy_daily.json`、`claude_daily.json`）
+- 豆包采集专用文件（采集型范式，见 §3.1.2）：账本 `doubao_journal.jsonl`（append-only）、状态 `doubao_state.json`（files offsets+fp，原子写）；开关另存 `~/.config/myccusage/doubao_config.json`（`{"enabled":bool}`，默认 false）。
 
 #### 缓存数据结构：
 ```json
@@ -165,8 +166,11 @@ myccusage/
 │   │   ├── grok.py             # Grok turn_completed 聚合与增量提取
 │   │   ├── agy.py              # Google Antigravity 原生 Protobuf varint 解码内核
 │   │   ├── dsh.py              # DeepSeek Harness 多帧 zstd 事件日志 + 官方投影口径复刻
+│   │   ├── doubao.py           # 豆包工作 采集型适配器：读固化账本产出标准 8 元组 (kind=capture)
+│   │   ├── doubao_capture.py   # 豆包工作 采集引擎（非适配器）：WAL 增量尾读 + .ldb 冷解码 + 账本固化
 │   │   └── __init__.py         # 适配器注册表 (ADAPTERS)
 │   ├── zstdcodec.py            # 零依赖 Zstandard 多帧解码内核 (ctypes libzstd / CLI 三级降级)
+│   ├── idbcodec.py             # 零依赖 IndexedDB/LevelDB 解码内核 (Snappy raw block + WAL 帧重组 + SSTable + V8 串)
 │   ├── core.py                 # 标题解析、单 Agent 粒度缓存、聚合计算内核
 │   ├── cli.py                  # CLI 参数解析、East Asian Width 排版渲染与 Dock 调度
 │   ├── macos/                  # macOS 程序坞应用源码（唯一真源，随 Wheel 一同发布）
@@ -195,7 +199,7 @@ myccusage/
 ### 2.1 `myccusage_lib/core.py` (数据内核与元数据提取)
 
 #### 全局常量与注册表：
-- `SUPPORTED_AGENTS`（仅登记展示名；9 个 Agent 均具备专属原生适配器，不存在外部 CLI 回退路径）：
+- `SUPPORTED_AGENTS`（仅登记展示名；10 个 Agent 均具备专属原生适配器，不存在外部 CLI 回退路径）：
   ```python
   SUPPORTED_AGENTS = {
       "agy": {"name": "Google Antigravity"},
@@ -207,10 +211,12 @@ myccusage/
       "opencode": {"name": "OpenCode"},
       "workbuddy": {"name": "WorkBuddy"},
       "dsh": {"name": "DeepSeek Harness"},
+      "doubao": {"name": "豆包工作"},
   }
   ```
 
-  9 个 Agent 均具备专属原生适配器，`ADAPTERS` 与 `SUPPORTED_AGENTS` 的键集必须完全一致。
+  10 个 Agent 均具备专属原生适配器，`ADAPTERS` 与 `SUPPORTED_AGENTS` 的键集必须完全一致。
+  其中 `doubao` 为**采集型适配器**：不直接扫描原始库，而是读取 `doubao_capture.py` 固化的账本（见 §3.1.2）。
 - `USD_CNY_RATE`：人民币兑美元参考汇率，仅用于把 CNY 等效费用换算为 USD 展示值。
 - `ADAPTERS`（定义于 `myccusage_lib/adapters/__init__.py`）：Agent ID → 适配器实例，键集必须与 `SUPPORTED_AGENTS` 完全一致。
 
@@ -248,6 +254,7 @@ myccusage/
 - `opencode`: `~/.local/share/opencode/opencode.db`
 - `workbuddy`: `~/.workbuddy/workbuddy.db`，兜底 `~/.workbuddy/projects/*/*.jsonl`
 - `dsh`: `$DSH_HOME/sessions/*/*/session.v4.jsonl.zstd` 内的 `session/title` 事件（latest-wins）
+- `doubao`: 固化账本中的会话元数据（conversation-list 名称），兜底工作区 `.sessions/<sid>/board.md` 表格第 2 列「Organizer 标题」
 
 ---
 
@@ -276,10 +283,13 @@ myccusage/
     （含 `byDate`，供前端按任意时间范围自行聚合，见 2.4）。
   - `GET  /api/insights?agent=<agent>`: **Agent 专属深度指标**（可选能力）。仅当适配器实现了
     `get_insights()` 时返回 `available: true`，否则 `available: false`（前端据此隐藏专属 tab，
-    绝不为不支持的 Agent 造空壳视图）。当前由 `dsh` 提供。
+    绝不为不支持的 Agent 造空壳视图）。当前由 `dsh`（kind=tps）与 `doubao`（kind=capture）提供。
   - `POST /api/refresh?agent=<agent|all>`: 强制失效缓存并重新解析。
   - `GET  /api/leave` / `POST /api/heartbeat`: 页面侧保活与离开信号。
   - `GET  /api/sync/status`、`POST /api/sync/trigger|config|unbind`: 多端 Git 同步。
+  - `GET  /api/doubao/status`、`POST /api/doubao/config`: 豆包工作采集开关与状态（热切换，见 §3.1.2）。
+- **豆包采集 tick 嵌入**：`/api/ping` 与 `/api/today` 入口各调用一次 `doubao_capture.tick()`，
+  复用既有双驱动源（程序坞 60s / Web 心跳），节流 ≥30s + 非阻塞锁；开关关闭时一次布尔判断即返回（零开销）。
 - **看门狗与自动回收 (`watchdog_loop`)**：
   - **有过客户端连接** → 按 `HEARTBEAT_TIMEOUT`（6s）无心跳回收，实现"用完即走"。
   - **从未有任何连接** → 按 `STARTUP_GRACE`（60s）回收，避免从终端误启动的服务成为永驻孤儿进程。
@@ -395,8 +405,35 @@ def get_insights(self) -> dict:
 3. **异常必须收敛**：`core.get_agent_insights()` 已统一 try/except 兜底，
    但适配器内部仍应自行容错，确保单个损坏文件不会让整个 tab 空白。
 
-当前实现：`dsh`（DeepSeek Harness）—— TPS / TTFT / 推理与工具耗时结构 /
-工具使用画像 / 逐会话运行指标。
+当前实现：
+- `dsh`（DeepSeek Harness，kind=tps）—— TPS / TTFT / 推理与工具耗时结构 / 工具使用画像 / 逐会话运行指标。
+- `doubao`（豆包工作，kind=capture）—— 上下文窗口构成占比 / 模型 id 分布 / 会话采集结构 / 覆盖窗口 / 5 条诚实 gaps。
+  前端 `renderInsightsView` 按 `data.kind` 分流：`capture` 走 `renderDoubaoInsights`，避免套用 dsh 的 TPS 视图产生误导。
+
+---
+
+### 3.1.2 采集型适配器（capture）范式 —— 以豆包工作为例
+
+多数适配器是**解析型**：直接只读扫描 Agent 的原始持久化文件（SQLite / JSONL / zstd / Protobuf）。
+但有些 Agent 的原始存储会**主动销毁历史**（如豆包工作的 IndexedDB/LevelDB 持续 compaction，usage 轮次数分钟内即被丢弃），
+"事后解析"根本拿不到数据。这类 Agent 需要**采集型**范式：
+
+1. **采集引擎与适配器分离**：`doubao_capture.py` 是采集引擎（**不进 `ADAPTERS`**），负责定期增量抓取并在数据丢失前固化；
+   `doubao.py` 是适配器（进 `ADAPTERS`），只读固化账本产出标准 8 元组，完全复用 `base._accumulate_records` 既有管线。
+2. **零新增进程**：采集 tick 嵌入既有常驻 daemon 的 `/api/ping` 与 `/api/today` 入口（各一行调用），
+   复用程序坞 60s / Web 心跳双驱动源，节流 ≥30s + 非阻塞锁。不另起服务、不另起定时器。
+3. **开关即零开销**：`~/.config/myccusage/doubao_config.json`（默认 `false`）。关闭时 tick 一次布尔判断即返回
+   （实测中位 0.125µs），完全退化回原有性能占用。Web 导航栏 📡 按钮 + 模态框热切换，`POST /api/doubao/config` 持久化。
+4. **增量 + 固化**：WAL `.log` 按 offset 增量尾读（4KB 重叠窗容忍半帧）；`.ldb` 变更时冷解码追平。
+   解码内核 `idbcodec.py`（零依赖 Snappy raw block + WAL 32KB 帧重组 + SSTable + V8 三种字符串编码）。
+   message_id 去重取 `context_total` 最大；append-only 账本 `~/.cache/myccusage/doubao_journal.jsonl` +
+   重复冗余超阈值才压实（`_COMPACT_SLACK`，内存计数避免每 tick 重读）；state 原子写，kill -9 重启续读不丢不重。
+5. **诚实口径**：豆包本地无计费 prompt/completion/cache_read_tokens，只有上下文窗口占用。
+   故 `inp`=上下文窗口占用（输入侧参考量，非计费量），`cr/out=0` 进 `gaps`，`model=unknown`（model_id 纯数字无名称映射）。
+   前端豆包单 Agent 账本视图顶部渲染口径横幅 `#agentCaliberNote` 明示。
+6. **固有边界**：只有采集器运行期间产生的轮次能被固化；开关关闭或程序坞/网页都没开的时段数据永久丢失，UI 明示。
+
+新增同类采集型 Agent 时，复制此分离结构：采集引擎固化账本 + 适配器读账本，tick 嵌入既有入口，开关默认关。
 
 ---
 
