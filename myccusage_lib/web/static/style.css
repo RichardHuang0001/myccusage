@@ -699,6 +699,11 @@ body.light-theme .navbar {
   min-width: 0;
 }
 
+/* 全景对比：右侧 Token 构成环形卡已移除，趋势图独占整行 */
+.charts-grid.chart-grid-full {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 @media (max-width: 960px) {
   .charts-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -736,7 +741,9 @@ body.light-theme .navbar {
 .chart-legend {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
+  row-gap: 6px;
   font-size: 0.75rem;
   color: var(--text-secondary);
 }

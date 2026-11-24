@@ -382,6 +382,8 @@
     donutChartCanvas: document.getElementById('donutChartCanvas'),
     donutStats: document.getElementById('donutStats'),
     trendChartTitle: document.getElementById('trendChartTitle'),
+    trendChartLegend: document.getElementById('trendChartLegend'),
+    tokenDonutCard: document.getElementById('tokenDonutCard'),
 
     // 模型管理弹窗 (二级)
     modelManagerModal: document.getElementById('modelManagerModal'),
@@ -1961,6 +1963,10 @@
 
     if (el.kpiSection) el.kpiSection.style.display = 'grid';
     el.chartsSection.style.display = 'grid';
+    // 全景对比：移除右侧 Token 构成环形卡，趋势图独占整行（单 Agent 视图保持原布局）
+    const isAllView = state.agent === 'all';
+    if (el.tokenDonutCard) el.tokenDonutCard.style.display = isAllView ? 'none' : '';
+    el.chartsSection.classList.toggle('chart-grid-full', isAllView);
     if (state.agent === 'all') {
       // 全景对比：展示各 Agent 对比卡片与竞赛折线图及全模型走势图，隐藏单 Agent 账本区
       el.allAgentsSection.style.display = 'block';
@@ -2242,13 +2248,13 @@
     if (el.val14DaysAvgCost) el.val14DaysAvgCost.innerHTML = formatInlineCost(model, avgCost14);
   }
 
-  // 左右两侧固定 Y 轴刻度动态对齐绘制
+  // 左右两侧固定 Y 轴刻度动态对齐绘制（全景视图无费用轴时仅绘制左侧）
   function renderTrendYAxisOverlays(chartInstance) {
     const chart = chartInstance || state.trendChartInstance;
     if (!chart || !chart.scales) return;
     const yScale = chart.scales.y;
     const yCostScale = chart.scales.yCost;
-    if (!yScale || !yCostScale) return;
+    if (!yScale) return;
 
     if (el.trendYAxisLeft && Array.isArray(yScale.ticks)) {
       let leftHtml = '';
@@ -2261,7 +2267,7 @@
       el.trendYAxisLeft.innerHTML = leftHtml;
     }
 
-    if (el.trendYAxisRight && Array.isArray(yCostScale.ticks)) {
+    if (el.trendYAxisRight && yCostScale && Array.isArray(yCostScale.ticks)) {
       let rightHtml = '';
       yCostScale.ticks.forEach(t => {
         const px = yCostScale.getPixelForValue(t.value);
@@ -2270,15 +2276,83 @@
         }
       });
       el.trendYAxisRight.innerHTML = rightHtml;
+    } else if (el.trendYAxisRight) {
+      el.trendYAxisRight.innerHTML = '';
     }
   }
 
+  // 全景视图趋势图例的出厂静态 HTML（首次渲染时缓存，切回单 Agent 视图时原样恢复）
+  let trendLegendStaticHtml = null;
+
+  // 全景视图：把每日柱状图按「实际调用的模型」拆分为堆叠色段。
+  // 复用 /api/models 的 byDate（loadData 已并行拉取，零新增网络请求）与
+  // aggregateModelsInRange / MODEL_SHARE_PALETTE 既有组件，纯内存 O(N) 聚合。
+  function buildModelStackSeries(trend) {
+    const byDate = (state.modelsData && state.modelsData.byDate) || null;
+    if (!byDate || !trend.length) return null;
+
+    const aggregated = aggregateModelsInRange(trend[0].date, trend[trend.length - 1].date, byDate);
+    const mainModels = aggregated.slice(0, MODEL_SHARE_TOP_N);
+    const otherModels = aggregated.slice(MODEL_SHARE_TOP_N);
+    const otherNames = new Set(otherModels.map(m => m.model));
+
+    const displayModels = mainModels.map((m, idx) => ({
+      id: m.model,
+      name: m.model === 'unknown' ? 'unknown (异机/未指定)' : m.model,
+      color: MODEL_SHARE_PALETTE[idx % MODEL_SHARE_PALETTE.length],
+      totalTokens: m.totalTokens
+    }));
+    const otherTokens = otherModels.reduce((acc, m) => acc + m.totalTokens, 0);
+    if (otherTokens > 0) {
+      displayModels.push({
+        id: '__others__',
+        name: `其他 (${otherModels.length} 款模型)`,
+        color: MODEL_SHARE_REST_COLOR,
+        totalTokens: otherTokens
+      });
+    }
+
+    // 单次遍历建立 日期 -> {模型: tokens} 索引，避免每根柱子 × 每个模型重复 find
+    const perDate = new Map();
+    trend.forEach(t => {
+      const list = byDate[t.date] || [];
+      const bucket = {};
+      let others = 0;
+      for (let i = 0; i < list.length; i++) {
+        const it = list[i];
+        const mid = it.model || 'unknown';
+        if (otherNames.has(mid)) {
+          others += it.totalTokens || 0;
+        } else {
+          bucket[mid] = (bucket[mid] || 0) + (it.totalTokens || 0);
+        }
+      }
+      if (others > 0) bucket.__others__ = others;
+      perDate.set(t.date, bucket);
+    });
+
+    const datasets = displayModels.map(m => ({
+      label: m.name,
+      data: trend.map(t => (perDate.get(t.date) || {})[m.id] || 0),
+      backgroundColor: m.color,
+      stack: 'tokens',
+      yAxisID: 'y',
+      borderWidth: 0,
+      maxBarThickness: 48
+    }));
+    return { datasets, displayModels };
+  }
+
   // 2. 图表渲染 (动态联动选中模型费率，金额轴默认使用人民币 CNY ¥)
+  //    全景对比视图改为「按模型堆叠」口径：仅柱状图 + 柱顶当日总量标签，无费用折线。
   function renderCharts(data) {
+    const isAll = state.agent === 'all';
     if (typeof Chart === 'undefined') {
       document.getElementById('trendChartFallback').style.display = 'block';
-      document.getElementById('donutChartFallback').style.display = 'block';
-      renderDonutLegendStats(data.summary);
+      if (!isAll) {
+        document.getElementById('donutChartFallback').style.display = 'block';
+        renderDonutLegendStats(data.summary);
+      }
       return;
     }
 
@@ -2295,19 +2369,93 @@
     const trend = data.dailyTrend || [];
     const totalDays = trend.length;
     const labels = trend.map(t => t.date.slice(5) + `(${t.weekday})`);
-    const outputTokens = trend.map(t => t.outputTokens);
-    const inputTokens = trend.map(t => t.inputTokens);
-    const cacheTokens = trend.map(t => t.cacheTokens);
-    const costData = trend.map(t => {
-      const c = calcCost(model, t.inputTokens, t.cacheTokens, t.outputTokens);
-      return Number(toCnyCost(model, c).toFixed(2));
-    });
 
-    el.trendChartTitle.textContent = state.agent === 'all'
-      ? `全平台 Agent 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
+    // 数据集：全景 = 按模型堆叠色段；单 Agent = 保持 Input/Cache/Output + 费用折线原口径
+    const modelStack = isAll ? buildModelStackSeries(trend) : null;
+    let datasets;
+    if (isAll) {
+      datasets = modelStack ? modelStack.datasets : [{
+        // byDate 缺失时的兜底：不虚构模型归属，仅展示当日总量
+        label: '全部 Token',
+        data: trend.map(t => (t.outputTokens || 0) + (t.inputTokens || 0) + (t.cacheTokens || 0)),
+        backgroundColor: '#6366f1',
+        stack: 'tokens',
+        yAxisID: 'y',
+        borderWidth: 0,
+        maxBarThickness: 48
+      }];
+    } else {
+      const outputTokens = trend.map(t => t.outputTokens);
+      const inputTokens = trend.map(t => t.inputTokens);
+      const cacheTokens = trend.map(t => t.cacheTokens);
+      const costData = trend.map(t => {
+        const c = calcCost(model, t.inputTokens, t.cacheTokens, t.outputTokens);
+        return Number(toCnyCost(model, c).toFixed(2));
+      });
+      datasets = [
+        {
+          label: 'Output',
+          data: outputTokens,
+          backgroundColor: '#f43f5e',
+          stack: 'tokens',
+          yAxisID: 'y'
+        },
+        {
+          label: 'Input (未命中)',
+          data: inputTokens,
+          backgroundColor: '#f59e0b',
+          stack: 'tokens',
+          yAxisID: 'y'
+        },
+        {
+          label: 'Cache (命中)',
+          data: cacheTokens,
+          backgroundColor: '#10b981',
+          stack: 'tokens',
+          yAxisID: 'y'
+        },
+        {
+          label: `等效费用 (CNY ¥)`,
+          data: costData,
+          type: 'line',
+          borderColor: '#818cf8',
+          backgroundColor: 'rgba(129, 140, 248, 0.15)',
+          borderWidth: 2.5,
+          pointBackgroundColor: '#6366f1',
+          pointRadius: 3,
+          fill: false,
+          tension: 0.25,
+          yAxisID: 'yCost'
+        }
+      ];
+    }
+
+    // 每日总量（直接对堆叠数据集求和，保证柱顶标签与柱高严格一致）
+    const dayTotals = isAll
+      ? labels.map((_, i) => datasets.reduce((acc, ds) => acc + (ds.data[i] || 0), 0))
+      : null;
+
+    el.trendChartTitle.textContent = isAll
+      ? `全平台 Agent 每日 Token 消耗趋势 · 按模型分布`
       : (data.mode === 'daily' 
           ? `${data.displayName} 每日 Token 消耗趋势与等效费用走向 (CNY ¥)`
           : `${data.displayName} 会话活跃分布与费用统计 (CNY ¥)`);
+
+    // 图例与右侧费用轴随视图切换：全景 = 动态模型图例、无费用轴
+    if (trendLegendStaticHtml === null && el.trendChartLegend) {
+      trendLegendStaticHtml = el.trendChartLegend.innerHTML;
+    }
+    if (el.trendYAxisRight) el.trendYAxisRight.style.display = isAll ? 'none' : '';
+    if (el.trendChartLegend) {
+      if (isAll) {
+        const legendModels = modelStack ? modelStack.displayModels : [{ name: '全部 Token', color: '#6366f1' }];
+        el.trendChartLegend.innerHTML = legendModels.map(m =>
+          `<span class="legend-dot" style="background-color: ${m.color};"></span><span>${escapeHtml(m.name)}</span>`
+        ).join('');
+      } else {
+        el.trendChartLegend.innerHTML = trendLegendStaticHtml;
+      }
+    }
 
     // 默认展示近 30 天：根据天数动态计算可滑动画布宽度 (仅小组件内部延展)
     const viewportWidth = (el.trendScrollViewport && el.trendScrollViewport.clientWidth > 0)
@@ -2344,107 +2492,131 @@
       }
     };
 
+    // 全景视图专用：柱顶绘制当日总量标签（口径 xxxM，小数省略；不足 1M 显示 <1M）
+    const barTotalLabelPlugin = {
+      id: 'barTotalLabels',
+      afterDatasetsDraw(chart) {
+        const yScale = chart.scales.y;
+        const meta = chart.getDatasetMeta(0);
+        if (!yScale || !meta || !meta.data || !dayTotals) return;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.font = `600 9px ${Chart.defaults.font.family}`;
+        ctx.fillStyle = textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        for (let i = 0; i < dayTotals.length; i++) {
+          const total = dayTotals[i];
+          if (!total) continue;
+          const bar = meta.data[i];
+          if (!bar) continue;
+          const label = total >= 1e6 ? `${Math.floor(total / 1e6)}M` : '<1M';
+          ctx.fillText(label, bar.x, yScale.getPixelForValue(total) - 3);
+        }
+        ctx.restore();
+      }
+    };
+
+    // 悬浮卡片：全景 = 当日各模型消耗明细（按量降序、过滤零值）；单 Agent = 原口径
+    const tooltipConfig = isAll ? {
+      backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+      titleColor: isDark ? '#f8fafc' : '#0f172a',
+      bodyColor: isDark ? '#cbd5e1' : '#334155',
+      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+      borderWidth: 1,
+      padding: 12,
+      boxPadding: 6,
+      usePointStyle: true,
+      filter: (item) => (item.raw || 0) > 0,
+      itemSort: (a, b) => (b.raw || 0) - (a.raw || 0),
+      callbacks: {
+        title: function (items) {
+          if (!items.length) return '';
+          const idx = items[0].dataIndex;
+          const d = trend[idx];
+          return d ? `${d.date.slice(5)}(${d.weekday})  ${formatTokens(dayTotals[idx])}` : items[0].label;
+        },
+        label: function (ctx) {
+          return ` ${ctx.dataset.label}: ${formatTokens(ctx.raw)}`;
+        }
+      }
+    } : {
+      callbacks: {
+        title: function (items) {
+          if (!items.length) return '';
+          const idx = items[0].dataIndex;
+          const d = trend[idx];
+          if (!d) return items[0].label;
+          const totalTokens = (d.outputTokens || 0) + (d.inputTokens || 0) + (d.cacheTokens || 0);
+          return `${d.date.slice(5)}(${d.weekday})  ${formatTokens(totalTokens)}`;
+        },
+        label: function (ctx) {
+          if (ctx.dataset.yAxisID === 'yCost') {
+            const val = ctx.raw;
+            if (model.currency === 'USD') {
+              const usdVal = (val / USD_CNY_RATE).toFixed(2);
+              return `${ctx.dataset.label}: ¥${val} (原 $${usdVal} USD)`;
+            }
+            return `${ctx.dataset.label}: ¥${val}`;
+          }
+          return `${ctx.dataset.label}: ${formatTokens(ctx.raw)}`;
+        }
+      }
+    };
+
+    const trendScales = {
+      x: {
+        grid: { display: false },
+        ticks: {
+          color: textColor,
+          font: { size: 10 }
+        }
+      },
+      y: {
+        position: 'left',
+        stacked: true,
+        grid: { color: gridColor },
+        border: { display: false },
+        // 全景视图预留柱顶标签头部空间
+        grace: isAll ? '12%' : 0,
+        ticks: {
+          display: false // 隐藏内部画布刻度，固定于左侧固定列中展示
+        }
+      }
+    };
+    if (!isAll) {
+      trendScales.yCost = {
+        position: 'right',
+        grid: { display: false },
+        border: { display: false },
+        ticks: {
+          display: false // 隐藏内部画布刻度，固定于右侧固定列中展示
+        }
+      };
+    }
+
     state.trendChartInstance = new Chart(el.trendChartCanvas, {
       type: 'bar',
-      plugins: [syncYAxisPlugin],
+      plugins: isAll ? [syncYAxisPlugin, barTotalLabelPlugin] : [syncYAxisPlugin],
       data: {
         labels: labels,
-        datasets: [
-          {
-            label: 'Output',
-            data: outputTokens,
-            backgroundColor: '#f43f5e',
-            stack: 'tokens',
-            yAxisID: 'y'
-          },
-          {
-            label: 'Input (未命中)',
-            data: inputTokens,
-            backgroundColor: '#f59e0b',
-            stack: 'tokens',
-            yAxisID: 'y'
-          },
-          {
-            label: 'Cache (命中)',
-            data: cacheTokens,
-            backgroundColor: '#10b981',
-            stack: 'tokens',
-            yAxisID: 'y'
-          },
-          {
-            label: `等效费用 (CNY ¥)`,
-            data: costData,
-            type: 'line',
-            borderColor: '#818cf8',
-            backgroundColor: 'rgba(129, 140, 248, 0.15)',
-            borderWidth: 2.5,
-            pointBackgroundColor: '#6366f1',
-            pointRadius: 3,
-            fill: false,
-            tension: 0.25,
-            yAxisID: 'yCost'
-          }
-        ]
+        datasets: datasets
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        // 顶部预留刻度标签空间，避免 grace 头部空间产生的最高刻度被固定轴容器裁切
+        layout: isAll ? { padding: { top: 10 } } : undefined,
+        animation: isAll ? { duration: 300 } : undefined,
         interaction: {
           mode: 'index',
           intersect: false
         },
         plugins: {
           legend: { display: false },
-          tooltip: {
-            callbacks: {
-              title: function (items) {
-                if (!items.length) return '';
-                const idx = items[0].dataIndex;
-                const d = trend[idx];
-                if (!d) return items[0].label;
-                const totalTokens = (d.outputTokens || 0) + (d.inputTokens || 0) + (d.cacheTokens || 0);
-                return `${d.date.slice(5)}(${d.weekday})  ${formatTokens(totalTokens)}`;
-              },
-              label: function (ctx) {
-                if (ctx.dataset.yAxisID === 'yCost') {
-                  const val = ctx.raw;
-                  if (model.currency === 'USD') {
-                    const usdVal = (val / USD_CNY_RATE).toFixed(2);
-                    return `${ctx.dataset.label}: ¥${val} (原 $${usdVal} USD)`;
-                  }
-                  return `${ctx.dataset.label}: ¥${val}`;
-                }
-                return `${ctx.dataset.label}: ${formatTokens(ctx.raw)}`;
-              }
-            }
-          }
+          tooltip: tooltipConfig
         },
-        scales: {
-          x: {
-            grid: { display: false },
-            ticks: {
-              color: textColor,
-              font: { size: 10 }
-            }
-          },
-          y: {
-            position: 'left',
-            stacked: true,
-            grid: { color: gridColor },
-            border: { display: false },
-            ticks: {
-              display: false // 隐藏内部画布刻度，固定于左侧固定列中展示
-            }
-          },
-          yCost: {
-            position: 'right',
-            grid: { display: false },
-            border: { display: false },
-            ticks: {
-              display: false // 隐藏内部画布刻度，固定于右侧固定列中展示
-            }
-          }
-        }
+        scales: trendScales
       }
     });
 
@@ -2459,6 +2631,15 @@
           }
         }, 50);
       });
+    }
+
+    // 全景视图已移除 Token 构成环形图：销毁可能残留的旧实例，释放内存后直接返回
+    if (isAll) {
+      if (state.donutChartInstance) {
+        state.donutChartInstance.destroy();
+        state.donutChartInstance = null;
+      }
+      return;
     }
 
     // 环形图 (Token 构成分析)
