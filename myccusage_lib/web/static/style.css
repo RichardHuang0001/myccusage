@@ -2967,3 +2967,18 @@ body.light-theme .navbar {
 .doubao-switch input:checked + .doubao-slider::before {
   transform: translateX(20px);
 }
+
+/* 豆包工作口径说明横幅 */
+.caliber-note {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 10px;
+}
+.caliber-note strong {
+  color: var(--accent-indigo, #6366f1);
+}

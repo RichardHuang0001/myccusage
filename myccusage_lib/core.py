@@ -50,6 +50,7 @@ SUPPORTED_AGENTS = {
     "opencode": {"name": "OpenCode"},
     "workbuddy": {"name": "WorkBuddy"},
     "dsh": {"name": "DeepSeek Harness"},
+    "doubao": {"name": "豆包工作"},
 }
 
 def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):

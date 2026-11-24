@@ -17,6 +17,7 @@ from .pi import PiAdapter
 from .grok import GrokAdapter
 from .agy import AntigravityAdapter
 from .dsh import DshAdapter
+from .doubao import DoubaoAdapter
 
 # 适配器注册表字典，键为 Agent 类型标识，值为具体的适配器实例
 ADAPTERS = {
@@ -29,6 +30,7 @@ ADAPTERS = {
     "grok": GrokAdapter(),
     "agy": AntigravityAdapter(),
     "dsh": DshAdapter(),
+    "doubao": DoubaoAdapter(),
 }
 
 def get_adapter(agent_type: str) -> BaseAgentAdapter:
@@ -63,4 +65,5 @@ __all__ = [
     "GrokAdapter",
     "AntigravityAdapter",
     "DshAdapter",
+    "DoubaoAdapter",
 ]

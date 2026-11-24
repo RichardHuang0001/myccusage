@@ -345,6 +345,7 @@
     insightsToolPanel: document.getElementById('insightsToolPanel'),
     insightsSessionPanel: document.getElementById('insightsSessionPanel'),
     insightsGapsPanel: document.getElementById('insightsGapsPanel'),
+    agentCaliberNote: document.getElementById('agentCaliberNote'),
 
     // 模型维度视图 (Models)
     modelsSection: document.getElementById('modelsSection'),
@@ -2044,10 +2045,13 @@
       if (el.raceChartSection) el.raceChartSection.style.display = 'none';
       if (el.modelTrendChartSection) el.modelTrendChartSection.style.display = 'none';
       if (el.tableSection) el.tableSection.style.display = 'none';
+      if (el.agentCaliberNote) el.agentCaliberNote.style.display = 'none';
       return;
     }
 
     if (el.kpiSection) el.kpiSection.style.display = 'grid';
+    // 口径横幅仅豆包单 Agent 账本视图显示（全景对比/模型/深度视图隐藏）
+    if (el.agentCaliberNote) el.agentCaliberNote.style.display = state.agent === 'doubao' ? 'block' : 'none';
     el.chartsSection.style.display = 'grid';
     // 全景对比：移除右侧 Token 构成环形卡，趋势图独占整行（单 Agent 视图保持原布局）
     const isAllView = state.agent === 'all';
@@ -3829,7 +3833,59 @@
     `;
   }
 
+  function renderDoubaoInsights(data) {
+    const t = data.totals || {};
+    const comp = data.contextComposition || {};
+    const totalCtx = t.totalTokens || 0;
+    const pct = (v) => totalCtx > 0 ? ((v / totalCtx) * 100).toFixed(1) + '%' : '--';
+
+    el.insightsHeadbar.innerHTML = `
+      <div class="insights-headline">
+        <span class="insights-headline-title">📡 ${escapeHtml(data.displayName || '豆包工作')}</span>
+        <span class="badge badge-subtle">采集内核：${escapeHtml(data.backend || '-')}</span>
+        <span class="badge badge-subtle">${t.sessions || 0} 个会话 · ${t.rounds || 0} 轮</span>
+        ${data.contextWindow ? `<span class="badge badge-subtle">上下文窗口 ${formatTokens(data.contextWindow)}</span>` : ''}
+      </div>
+      <p class="insights-headline-hint">
+        口径为上下文窗口占用快照（输入侧参考量），由本地采集在数据被清理前固化；非计费账单。
+      </p>`;
+
+    el.insightsKpiGrid.innerHTML = [
+      kpiCard('上下文占用总量', '输入侧参考量', formatTokens(totalCtx), `${t.rounds || 0} 轮累计`),
+      kpiCard('系统提示', '占比', pct(comp.system_prompt), formatTokens(comp.system_prompt || 0)),
+      kpiCard('对话消息', '占比', pct(comp.messages), formatTokens(comp.messages || 0)),
+      kpiCard('技能', '占比', pct(comp.skills), formatTokens(comp.skills || 0)),
+      kpiCard('工具', '占比', pct(comp.tools), formatTokens(comp.tools || 0)),
+      kpiCard('已固化轮次', '采集成果', `${t.rounds || 0}`, `${t.sessions || 0} 个会话`),
+      kpiCard('覆盖起点', '最早轮次', data.coverageSince ? formatTime(new Date(data.coverageSince).toISOString()) : '--', '开启前数据不可追回'),
+      kpiCard('模型 ID', '本地无名称映射', (data.modelIds && data.modelIds.length) ? data.modelIds.map(m => m.id).join('/') : '--', '统一归入 unknown', 'highlight-card'),
+    ].join('');
+
+    const mids = data.modelIds || [];
+    el.insightsToolPanel.innerHTML = `
+      <div class="insights-panel-title">🔢 原始模型 ID 分布</div>
+      ${mids.length ? `<div class="insights-tool-bars">${mids.map(m => {
+        const p = t.rounds > 0 ? (m.calls / t.rounds) * 100 : 0;
+        return `<div class="insights-tool-row"><span class="insights-tool-name">model_id ${escapeHtml(m.id)}</span><span class="insights-tool-track"><span class="insights-tool-fill" style="width:${p.toFixed(1)}%"></span></span><span class="insights-tool-count">${m.calls}</span></div>`;
+      }).join('')}</div>` : '<div class="empty-state">暂无轮次数据</div>'}`;
+
+    const sessions = (data.sessions || []).slice(0, 12);
+    el.insightsSessionPanel.innerHTML = `
+      <div class="insights-panel-title">📊 会话采集结构（按上下文占用降序 · Top ${sessions.length}）</div>
+      ${sessions.length ? `<div class="session-table-wrap"><table class="data-table"><thead><tr><th>会话</th><th class="num">轮次</th><th class="num">上下文占用</th><th>最近活跃</th></tr></thead><tbody>${sessions.map(s => `<tr><td>${escapeHtml(s.title || s.sessionId || '(未命名)')}</td><td class="num">${s.rounds}</td><td class="num">${formatTokens(s.totalTokens)}</td><td>${s.lastActivity ? formatTime(s.lastActivity) : '--'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">暂无会话数据</div>'}`;
+
+    const gaps = data.gaps || [];
+    el.insightsGapsPanel.innerHTML = gaps.length ? `
+      <div class="insights-panel-title">ℹ️ 口径说明与已知缺口</div>
+      <ul class="insights-gaps-list">${gaps.map(g => `<li>${escapeHtml(g)}</li>`).join('')}</ul>` : '';
+  }
+
   function renderInsightsView(data) {
+    // 豆包工作走采集型专属分支（上下文构成/覆盖窗口），不复用 dsh 的 TPS/TTFT 视图
+    if (data.kind === 'capture') {
+      renderDoubaoInsights(data);
+      return;
+    }
     const t = data.totals || {};
 
     // ---- 顶部说明条：后端解码链路 + 会话数 ----
