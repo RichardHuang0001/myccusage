@@ -992,6 +992,7 @@ def main(raw_args=None):
     web_port = 8488
     is_daemon = False
     auto_open = True
+    is_doubao_capture_once = False
 
     # 手动解析命令行参数（避免依赖外部库的复杂逻辑，支持灵活标志位置）
     i = 0
@@ -1010,6 +1011,9 @@ def main(raw_args=None):
         elif a == "--daemon":
             is_daemon = True
             is_web_mode = True
+        # 豆包工作采集手动单步（调试用，绕过开关/节流/指纹）
+        elif a == "--doubao-capture-once":
+            is_doubao_capture_once = True
         # 解析禁止自动打开浏览器标记
         elif a in ("--no-open", "-n"):
             auto_open = False
@@ -1059,6 +1063,18 @@ def main(raw_args=None):
     # 如果激活了 Dock 模式，调度到 macOS 原生程序坞构建与拉起逻辑
     if is_dock_mode:
         launch_macos_dock_app()
+        return
+
+    # 豆包工作采集手动单步：强制跑一次采集并打印状态（调试/排查用）
+    if is_doubao_capture_once:
+        from .adapters import doubao_capture
+        doubao_capture.tick(force=True)
+        st = doubao_capture.get_status()
+        print("豆包工作采集单步完成：")
+        print(f"  开关状态: {'开启' if st['enabled'] else '关闭'}（单步强制采集不受开关限制）")
+        print(f"  数据源可用: {'是' if st['available'] else '否（未找到豆包 LevelDB 目录）'}")
+        print(f"  已固化轮次: {st['capturedRounds']}  会话: {st['capturedConversations']}")
+        print(f"  账本体量: {st['journalBytes']} 字节")
         return
 
     # 如果激活了 Web 模式，将调度到服务端代码

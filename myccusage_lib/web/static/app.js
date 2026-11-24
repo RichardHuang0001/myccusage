@@ -267,6 +267,19 @@
     btnCloseSyncView: document.getElementById('btnCloseSyncView'),
     btnTriggerModalSync: document.getElementById('btnTriggerModalSync'),
 
+    // 豆包工作本地采集弹窗
+    doubaoModal: document.getElementById('doubaoModal'),
+    btnDoubaoSettings: document.getElementById('btnDoubaoSettings'),
+    btnCloseDoubaoModal: document.getElementById('btnCloseDoubaoModal'),
+    btnCloseDoubaoView: document.getElementById('btnCloseDoubaoView'),
+    doubaoEnabledToggle: document.getElementById('doubaoEnabledToggle'),
+    doubaoAvailable: document.getElementById('doubaoAvailable'),
+    doubaoRounds: document.getElementById('doubaoRounds'),
+    doubaoConvs: document.getElementById('doubaoConvs'),
+    doubaoJournal: document.getElementById('doubaoJournal'),
+    doubaoLastTick: document.getElementById('doubaoLastTick'),
+    doubaoSince: document.getElementById('doubaoSince'),
+
     // 多端同步进度实时气泡
     syncPopover: document.getElementById('syncPopover'),
     btnCloseSyncPopover: document.getElementById('btnCloseSyncPopover'),
@@ -831,6 +844,64 @@
 
   function closeSyncModal() {
     if (el.syncModal) el.syncModal.style.display = 'none';
+  }
+
+  // --- 豆包工作本地采集设置 ---
+  function formatBytes(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(2) + ' MB';
+  }
+
+  function renderDoubaoStatus(st) {
+    if (!st) return;
+    if (el.doubaoEnabledToggle) el.doubaoEnabledToggle.checked = !!st.enabled;
+    if (el.doubaoAvailable) el.doubaoAvailable.textContent = st.available ? '🟢 已检测到豆包本地存储' : '⚪ 未检测到';
+    if (el.doubaoRounds) el.doubaoRounds.textContent = String(st.capturedRounds || 0);
+    if (el.doubaoConvs) el.doubaoConvs.textContent = String(st.capturedConversations || 0);
+    if (el.doubaoJournal) el.doubaoJournal.textContent = formatBytes(st.journalBytes || 0);
+    if (el.doubaoLastTick) {
+      el.doubaoLastTick.textContent = st.lastTickTime
+        ? formatTime(new Date(st.lastTickTime * 1000).toISOString()) : '从未';
+    }
+    if (el.doubaoSince) {
+      el.doubaoSince.textContent = st.coverageSince
+        ? formatTime(new Date(st.coverageSince).toISOString()) : '--';
+    }
+  }
+
+  async function refreshDoubaoStatus() {
+    try {
+      const res = await fetch('/api/doubao/status', { cache: 'no-store' });
+      renderDoubaoStatus(await res.json());
+    } catch (e) { /* 静默 */ }
+  }
+
+  function openDoubaoModal() {
+    if (!el.doubaoModal) return;
+    el.doubaoModal.style.display = 'flex';
+    refreshDoubaoStatus();
+  }
+
+  function closeDoubaoModal() {
+    if (el.doubaoModal) el.doubaoModal.style.display = 'none';
+  }
+
+  async function onDoubaoToggle() {
+    if (!el.doubaoEnabledToggle) return;
+    const enabled = el.doubaoEnabledToggle.checked;
+    try {
+      const res = await fetch('/api/doubao/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      renderDoubaoStatus(await res.json());
+      showToast(enabled ? '已开启豆包工作持续统计' : '已关闭豆包工作持续统计（零额外开销）');
+    } catch (e) {
+      el.doubaoEnabledToggle.checked = !enabled;
+    }
   }
 
   let syncPopoverAutoCloseTimer = null;
@@ -1659,6 +1730,21 @@
       el.btnSyncSettings.addEventListener('click', (e) => {
         e.stopPropagation();
         openSyncModal();
+      });
+    }
+
+    if (el.btnDoubaoSettings) {
+      el.btnDoubaoSettings.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openDoubaoModal();
+      });
+    }
+    if (el.btnCloseDoubaoModal) el.btnCloseDoubaoModal.addEventListener('click', closeDoubaoModal);
+    if (el.btnCloseDoubaoView) el.btnCloseDoubaoView.addEventListener('click', closeDoubaoModal);
+    if (el.doubaoEnabledToggle) el.doubaoEnabledToggle.addEventListener('change', onDoubaoToggle);
+    if (el.doubaoModal) {
+      el.doubaoModal.addEventListener('click', (e) => {
+        if (e.target === el.doubaoModal) closeDoubaoModal();
       });
     }
 

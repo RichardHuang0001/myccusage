@@ -49,6 +49,9 @@
             <button class="btn btn-sync-settings" id="btnSyncSettings" title="管理多端同步设置与已连接设备" type="button">
               ⚙️
             </button>
+            <button class="btn btn-sync-settings" id="btnDoubaoSettings" title="豆包工作本地采集设置" type="button">
+              📡
+            </button>
           </div>
 
           <!-- 多端同步流程进度与报错反馈气泡 (Sync Progress Bubble) -->
@@ -790,6 +793,64 @@ note: 官方标准计费 (输入 $3/M | 缓存 $0.3/M | 输出 $15/M)"></textare
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 豆包工作本地采集设置 -->
+  <div class="modal-backdrop" id="doubaoModal" style="display: none;">
+    <div class="modal-dialog modal-md">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 class="modal-title">📡 豆包工作本地采集</h3>
+          <span class="modal-subtitle">在本地存储清理前固化逐轮用量 · 纯本地只读 · 零新增进程</span>
+        </div>
+        <button class="modal-close-btn" id="btnCloseDoubaoModal" type="button" title="关闭窗口">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="sync-status-card">
+          <div class="sync-status-row" style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 600;">持续统计开关</span>
+            <label class="doubao-switch" title="开启后搭车程序坞轮询/网页心跳增量采集">
+              <input type="checkbox" id="doubaoEnabledToggle">
+              <span class="doubao-slider"></span>
+            </label>
+          </div>
+          <p class="sync-tip-text" style="margin-top: 10px;">
+            开启后，搭车程序坞 60s 轮询 / 网页心跳，增量抓取豆包逐轮上下文用量并固化到本地账本；
+            <strong>关闭即零额外性能开销</strong>。关闭期间产生的数据不采集、不可追回。
+            口径为上下文窗口占用（输入侧参考量），非真实账单。
+          </p>
+        </div>
+        <div class="sync-details-list" style="margin-top: 14px; font-size: 0.85rem; display: flex; flex-direction: column; gap: 6px;">
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">数据源</span>
+            <span class="detail-val" id="doubaoAvailable">--</span>
+          </div>
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">已固化轮次</span>
+            <span class="detail-val" id="doubaoRounds">0</span>
+          </div>
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">会话数</span>
+            <span class="detail-val" id="doubaoConvs">0</span>
+          </div>
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">账本体量</span>
+            <span class="detail-val" id="doubaoJournal">0 B</span>
+          </div>
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">最近采集</span>
+            <span class="detail-val" id="doubaoLastTick">从未</span>
+          </div>
+          <div class="sync-detail-item" style="display: flex; justify-content: space-between;">
+            <span class="detail-label" style="color: var(--text-muted);">覆盖起点</span>
+            <span class="detail-val" id="doubaoSince">--</span>
+          </div>
+        </div>
+        <div class="sync-action-bar" style="margin-top: 18px; display: flex; justify-content: flex-end;">
+          <button class="btn btn-secondary" id="btnCloseDoubaoView" type="button">关闭</button>
         </div>
       </div>
     </div>

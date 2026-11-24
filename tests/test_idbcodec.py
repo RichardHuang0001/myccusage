@@ -223,3 +223,14 @@ def test_conversation_meta_latin1():
             + b'name"\x05' + b"hello")
     meta = C.extract_conversation_meta(blob)
     assert meta[0]["name"] == "hello"
+
+
+def test_adjacent_rounds_identity_not_misassigned():
+    # 两个不同轮次紧邻（< 窗口），各自必须配到自己的 message_id（取最近匹配）
+    a = _usage_blob(mid="8b19a730-e7e4-11f1-a4cc-35d422d7b591", msg=200)
+    b = _usage_blob(mid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", msg=900)
+    recs = C.extract_usage_records(a + b" " + b)
+    assert len(recs) == 2
+    by_mid = {r["message_id"]: r for r in recs}
+    assert by_mid["8b19a730-e7e4-11f1-a4cc-35d422d7b591"]["context_total"] == 610
+    assert by_mid["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]["context_total"] == 1310

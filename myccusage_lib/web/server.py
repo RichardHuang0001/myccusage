@@ -39,6 +39,7 @@ from ..sync import (
     get_default_device_id,
     get_default_device_name
 )
+from ..adapters import doubao_capture
 
 # 定位静态资源目录，使用绝对路径以避免运行目录不同导致的文件找不到问题
 STATIC_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
@@ -306,6 +307,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(e)}, 500)
             return
 
+        if path == "/api/doubao/config":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body)
+                res = doubao_capture.set_enabled(bool(data.get("enabled", False)))
+                self.send_json(res)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
         self.send_json({"error": "Not Found"}, 404)
 
     def do_GET(self):
@@ -320,11 +332,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/ping":
             ServerState.has_client_connected = True  # 记录至少一次客户端连接
             ServerState.last_heartbeat_time = time.time()  # 更新心跳时间，重置看门狗
+            doubao_capture.tick()  # 豆包采集搭车心跳（内部节流 ≥30s，关闭态 ~0µs）
             self.send_json({"pong": True})
             return
 
         # 今日轻量极速摘要接口（供 Dock 状态栏或轻量微型组件高频轮询）
         if path == "/api/today":
+            doubao_capture.tick()  # 豆包采集搭车程序坞 60s 轮询（内部节流，关闭态 ~0µs）
             force = query.get("refresh", ["0"])[0] in ("1", "true")
             try:
                 data = get_today_quick_summary(force_refresh=force)
@@ -348,6 +362,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 "lastSyncMessage": cfg.get("last_sync_message", ""),
                 "syncedDevices": devices
             })
+            return
+
+        # 豆包工作采集状态接口（供 Web 开关旁展示）
+        if path == "/api/doubao/status":
+            try:
+                self.send_json(doubao_capture.get_status())
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
             return
 
         # 1. API 路由设计

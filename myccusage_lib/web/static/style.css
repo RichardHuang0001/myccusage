@@ -2928,3 +2928,42 @@ body.light-theme .navbar {
 .insights-gaps-list li::marker {
   color: var(--accent-amber);
 }
+
+/* 豆包工作采集开关 */
+.doubao-switch {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.doubao-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.doubao-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border-color, #374151);
+  border-radius: 26px;
+  transition: background 0.2s ease;
+}
+.doubao-slider::before {
+  content: "";
+  position: absolute;
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+.doubao-switch input:checked + .doubao-slider {
+  background: var(--accent-green, #10b981);
+}
+.doubao-switch input:checked + .doubao-slider::before {
+  transform: translateX(20px);
+}

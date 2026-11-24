@@ -248,9 +248,17 @@ _ID_WINDOW = 6000  # usage 与身份字段的共现窗口（实测身份字段�
 
 
 def _find_near(pat: re.Pattern, blob: bytes, center: int):
+    """取窗口内距离 center 最近的匹配（而非第一个），避免相邻轮次身份误配。"""
     lo = max(0, center - _ID_WINDOW)
     hi = min(len(blob), center + _ID_WINDOW)
-    return pat.search(blob, lo, hi)
+    best = None
+    best_d = None
+    for m in pat.finditer(blob, lo, hi):
+        d = abs(m.start() - center)
+        if best_d is None or d < best_d:
+            best_d = d
+            best = m
+    return best
 
 
 def extract_usage_records(blob: bytes) -> list[dict]:
