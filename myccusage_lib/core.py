@@ -856,14 +856,23 @@ def get_today_quick_summary(force_refresh=False):
     # 1. 快速提取各 Agent 当前的轻量级指纹 (< 5ms)
     #    异机分片指纹一并纳入缓存键：保证远端同步完成后本机摘要立即失效重算
     remote_fp = get_remote_fingerprint()
+    # 各 Agent 指纹相互独立，并行计算把冷态串行累加（WorkBuddy 主导 ~20ms）压到最慢单家；
+    # 配合 base.scan_files_fast 的短 TTL 记忆化，热态各家指纹均为缓存命中，总开销 <1ms。
+    avail = [(aid, ad) for aid, ad in ADAPTERS.items() if ad and ad.is_available()]
+
+    def _one_fp(item):
+        aid, ad = item
+        try:
+            local_fp = ad.get_source_fingerprint()
+        except Exception:
+            local_fp = ""
+        return aid, f"{local_fp}#{remote_fp}"
+
     base_fps = {}
-    for aid, ad in ADAPTERS.items():
-        if ad and ad.is_available():
-            try:
-                local_fp = ad.get_source_fingerprint()
-            except Exception:
-                local_fp = ""
-            base_fps[aid] = f"{local_fp}#{remote_fp}"
+    if avail:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(avail)) as pool:
+            for aid, fp in pool.map(_one_fp, avail):
+                base_fps[aid] = fp
 
     with _TODAY_CACHE_LOCK:
         if (

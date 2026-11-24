@@ -142,6 +142,9 @@ def calc_deepseek_cost(input_tokens, cache_read_tokens, total_output_tokens):
 1. **100% 纯 Python 原生直连**：彻底消除对外部 Node.js/ccusage 工具的调用，直连各 Agent 的原生存储格式（如 Antigravity 的 SQLite+Protobuf、Claude 的 JSONL、Codex 的 delta 日志等）。
 2. **单 Agent 粒度 mtime 指纹感知**：各 Adapter 实现微秒级 `get_source_fingerprint()`，高频轮询时仅当检测到某个 Agent 数据源发生修改时才触发该 Agent 计算，其余未改动 Agent 0 磁盘 I/O 内存复用。
 3. **当日热文件快速剪枝 (`today_only=True`)**：基于 `os.scandir` 在文件系统目录流中单次系统调用内联过滤 `st_mtime >= today_midnight`，沉睡的数百个历史冷文件完全跳过，常规 60s 刷新耗时仅需 5ms。
+   - **扫描结果短 TTL 记忆化**：`scan_files_fast` 按 `(目录集, 扩展名, 递归, 深度, mtime 下限)` 缓存遍历结果，TTL 2.5s（`_SCAN_CACHE_TTL`，线程安全，返回副本）。
+     大型源树（如 WorkBuddy `projects/` 上千子目录）在看板并发拉取多端点 / 心跳密集调用时共享同一次 walk，消除数秒内重复递归；TTL 过期即重扫，变更感知延迟 ≤2.5s。
+   - **今日指纹并行化**：`get_today_quick_summary` 用线程池并行计算各 Agent 指纹（相互独立），冷态串行累加由最慢单家主导；热态配合扫描记忆化总开销 <1ms。
 4. **历史日跨日切片隔离**：每一次交互的 Token 严格按其自身的时间戳归入对应自然日桶，即便两周前的旧 Session 被唤醒追加，历史数据与今日数据也绝对守恒、互不污染。
 
 ---

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import re
+import time
 import threading
 from datetime import datetime, timezone
 
@@ -25,6 +26,14 @@ _FILE_CACHE_SCHEMA = 5
 
 # 非真实模型的伪名（大小写不敏感），统一归入 UNKNOWN_MODEL
 _PSEUDO_MODELS = frozenset({"<synthetic>", "synthetic", "none", "null", "unknown", ""})
+
+# 目录扫描结果短 TTL 记忆化：看板一次性并发拉取多端点、心跳密集调用时共享同一次目录遍历，
+# 避免对大型源树（如 WorkBuddy projects/ 上千子目录）在数秒内重复递归 walk。
+# TTL 内最多 2.5s 的变更感知延迟，对看板刷新无感；TTL 过期即重新遍历，不丢失真实变更。
+_SCAN_CACHE_TTL = 2.5
+_SCAN_CACHE: dict = {}
+_SCAN_CACHE_LOCK = threading.Lock()
+_SCAN_CACHE_MAX = 64
 
 
 def normalize_model_name(raw) -> str:
@@ -387,6 +396,15 @@ def scan_files_fast(
     if today_only and min_mtime <= 0.0:
         min_mtime = get_today_midnight_ts()
 
+    # 短 TTL 记忆化：同一 (目录集, 扩展名, 递归, 深度, mtime 下限) 在 TTL 内复用遍历结果。
+    # today_only 仅决定 min_mtime，解析后与显式 min_mtime 共享同一缓存键。
+    key = (tuple(root_dirs), tuple(extensions), recursive, max_depth, min_mtime)
+    now = time.monotonic()
+    with _SCAN_CACHE_LOCK:
+        hit = _SCAN_CACHE.get(key)
+        if hit is not None and now - hit[0] < _SCAN_CACHE_TTL:
+            return list(hit[1])
+
     results = []
 
     def _walk(directory: str, current_depth: int):
@@ -418,7 +436,11 @@ def scan_files_fast(
         if os.path.isdir(rdir):
             _walk(rdir, 1)
 
-    return results
+    with _SCAN_CACHE_LOCK:
+        if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX:
+            _SCAN_CACHE.clear()
+        _SCAN_CACHE[key] = (now, results)
+    return list(results)
 
 def ts_to_iso(ts_seconds: float) -> str:
     """浮点/整数秒转 ISO 8601 字符串"""
